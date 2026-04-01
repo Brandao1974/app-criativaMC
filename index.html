@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gestao de Obras</title>
+<meta name="theme-color" content="#0c4a6e">
+<meta name="description" content="Aplicacao de gestao de obras com agenda, caixa e acompanhamento operacional.">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/svg+xml" href="images/favicon.svg">
+<link rel="icon" type="image/png" sizes="96x96" href="images/favicon-96x96.png">
+<link rel="shortcut icon" href="images/favicon.ico">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<script src="js/pwa.js"></script>
+<script>
+const usuarioLogado = localStorage.getItem("usuarioLogado");
+window.location.replace(usuarioLogado ? "dashboard.html" : "login.html");
+</script>
+<noscript>Esta aplicacao precisa de JavaScript habilitado.</noscript>
+</body>
+</html>

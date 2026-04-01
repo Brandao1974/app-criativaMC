@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0c4a6e">
+<meta name="description" content="Agenda operacional das obras agendadas.">
+<title>Agenda de Obras</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/svg+xml" href="images/favicon.svg">
+<link rel="icon" type="image/png" sizes="96x96" href="images/favicon-96x96.png">
+<link rel="shortcut icon" href="images/favicon.ico">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<canvas id="agenda-confete" class="agenda-confete"></canvas>
+<div class="dashboard agenda-dashboard">
+<div class="agenda-topo">
+<div>
+<p class="agenda-eyebrow">Planejamento Operacional</p>
+<h2>Agenda de Obras</h2>
+<p class="agenda-subtitulo">Visualize o fluxo das proximas execucoes, prioridades e responsaveis em ordem cronologica.</p>
+</div>
+<button class="agenda-voltar" onclick="voltarDashboard()">Voltar</button>
+</div>
+<div class="agenda-resumo">
+<div class="agenda-metrica">
+<span class="agenda-metrica-label">Obras agendadas</span>
+<strong id="agenda-total">0</strong>
+</div>
+<div class="agenda-metrica">
+<span class="agenda-metrica-label">Proxima execucao</span>
+<strong id="agenda-proxima">Sem data</strong>
+</div>
+</div>
+<div class="agenda-lista-wrap">
+<div class="agenda-lista-header">
+<h3>Proximas Obras</h3>
+<p>Toque em um card para abrir os detalhes.</p>
+</div>
+<div id="lista-agenda" class="agenda-lista"></div>
+</div>
+</div>
+<script src="js/pwa.js"></script>
+<script src="js/agenda.js"></script>
+</body>
+</html>

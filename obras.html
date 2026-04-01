@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0c4a6e">
+<meta name="description" content="Cadastro e acompanhamento da carteira de obras.">
+<title>Obras</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/svg+xml" href="images/favicon.svg">
+<link rel="icon" type="image/png" sizes="96x96" href="images/favicon-96x96.png">
+<link rel="shortcut icon" href="images/favicon.ico">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="dashboard obras-dashboard">
+<div class="detalhe-topo">
+<div>
+<p class="agenda-eyebrow">Pipeline Comercial e Operacional</p>
+<h2>Obras</h2>
+<p class="agenda-subtitulo">Cadastre novas obras e acompanhe rapidamente a carteira ativa da operacao.</p>
+</div>
+<button class="agenda-voltar" onclick="voltarDashboard()">Voltar</button>
+</div>
+<div class="detalhe-grid">
+<div class="nova-obra detalhe-card">
+<div class="detalhe-card-head">
+<h3>Nova Obra</h3>
+<p>Registre cliente, descricao e valor fechado para iniciar o ciclo da obra.</p>
+</div>
+<input type="text" id="cliente" placeholder="Cliente">
+<input type="text" id="descricao" placeholder="Descricao">
+<input type="text" id="localizacao" placeholder="Localizacao da Obra">
+<input type="text" id="responsavel-loja" placeholder="Responsavel da Loja">
+<input type="number" step="0.01" id="valor" placeholder="Valor Fechado">
+<button onclick="criarObra()">Criar Obra</button>
+</div>
+<div class="lista-obras detalhe-card">
+<div class="detalhe-card-head">
+<h3>Carteira de Obras</h3>
+<p>Toque em uma obra para abrir o detalhe, financeiro e historico operacional.</p>
+</div>
+<div id="lista"></div>
+</div>
+</div>
+</div>
+<script src="js/pwa.js"></script>
+<script src="js/obras.js"></script>
+</body>
+</html>
