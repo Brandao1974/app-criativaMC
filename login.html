@@ -2,6 +2,7 @@
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://*.supabase.co wss://*.supabase.co http://127.0.0.1:54321 http://localhost:54321; object-src 'none'; base-uri 'self'; form-action 'self'">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#0c4a6e">
 <meta name="description" content="Acesso a aplicacao Gestao de Obras.">
@@ -13,15 +14,27 @@
 <link rel="apple-touch-icon" href="images/apple-touch-icon.png">
 <link rel="stylesheet" href="css/style.css">
 </head>
-<body>
+<body data-pagina="login">
+<p id="app-mensagem" class="app-mensagem" role="status" aria-live="polite"></p>
 <div class="login-container">
 <h2>Gestao de Obras</h2>
-<input type="text" id="usuario" placeholder="Usuario">
-<input type="password" id="senha" placeholder="Senha">
-<button onclick="fazerLogin()">Entrar</button>
+<form id="form-login">
+<label for="usuario">Usuário</label>
+<input type="text" id="usuario" autocomplete="username" placeholder="Usuário" maxlength="30" autocapitalize="none" required>
+<label for="senha">Senha</label>
+<input type="password" id="senha" autocomplete="current-password" placeholder="Senha" required>
+<button type="submit">Entrar</button>
+</form>
+<details><summary>Primeiro acesso</summary>
+<form id="form-ativacao" autocomplete="off">
+<label for="ativacao-usuario">Usuário</label><input id="ativacao-usuario" autocomplete="username" required>
+<label for="ativacao-codigo">Código individual</label><input id="ativacao-codigo" autocomplete="off" required>
+<label for="ativacao-senha">Senha pessoal (12 a 128 caracteres)</label><input id="ativacao-senha" type="password" autocomplete="new-password" minlength="12" maxlength="128" required>
+<button type="submit">Ativar acesso</button>
+</form></details>
 <p id="erro-login"></p>
 </div>
 <script src="js/pwa.js"></script>
-<script src="js/auth.js"></script>
+<script type="module" src="js/bootstrap.js"></script>
 </body>
 </html>

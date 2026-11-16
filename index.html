@@ -2,6 +2,7 @@
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://*.supabase.co wss://*.supabase.co http://127.0.0.1:54321 http://localhost:54321; object-src 'none'; base-uri 'self'; form-action 'self'">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Gestao de Obras</title>
 <meta name="theme-color" content="#0c4a6e">
@@ -13,12 +14,11 @@
 <link rel="apple-touch-icon" href="images/apple-touch-icon.png">
 <link rel="stylesheet" href="css/style.css">
 </head>
-<body>
+<body data-pagina="index">
+<p id="app-mensagem" class="app-mensagem" role="status" aria-live="polite"></p>
 <script src="js/pwa.js"></script>
-<script>
-const usuarioLogado = localStorage.getItem("usuarioLogado");
-window.location.replace(usuarioLogado ? "dashboard.html" : "login.html");
-</script>
+
 <noscript>Esta aplicacao precisa de JavaScript habilitado.</noscript>
+<script type="module" src="js/bootstrap.js"></script>
 </body>
 </html>

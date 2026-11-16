@@ -1,0 +1,37 @@
+✔ auth: credenciais encaminhadas ao SDK; membro é validado pelo banco (2.7781ms)
+✔ auth: senha inválida não consulta dados; terceiro autenticado perde sessão local (2.1253ms)
+✔ auth: sem sessão não carrega financeiro; logout notifica limpeza (0.6586ms)
+✔ auth: troca de usuário invalida resposta iniciada com identidade anterior (0.6798ms)
+✔ migração reaplicável e checksum divergente bloqueado (6224.2909ms)
+✔ sem sessão, anônimo e terceiro são bloqueados; metadata não autoriza (76.6173ms)
+✔ criação idempotente e base compartilhada (70.8135ms)
+✔ entrada/despesa e saldo exato; valor inválido e campos forjados recusados (63.0215ms)
+✔ pedido não afeta saldo, pendência única e autoaprovação/rejeição bloqueadas (40.4512ms)
+✔ aprovação atômica, estorno integral e retries sem duplicação (57.7265ms)
+✔ rejeição inversa, motivo obrigatório e rollback sem efeito parcial (43.7576ms)
+✔ atualização CAS, evento de agendamento e retry depois da mudança (27.6758ms)
+✔ DML e rotinas administrativas inacessíveis ao cliente (53.4046ms)
+✔ triggers defendem inclusive escrita administrativa inconsistente (10.8198ms)
+✔ desativação elimina acesso mesmo com claim anterior (9.3077ms)
+✔ RLS em todas as tabelas e nenhum definer público (7.0625ms)
+✔ vetor financeiro obrigatório, 10 mil centavos e agregado acima de Number seguro (6743.7499ms)
+✔ moeda: parser estrito e totais além de Number sem arredondamento (6128.058ms)
+✔ dry-run preserva original, categoria, assinaturas e saldo sem inventar ajuste (3.3185ms)
+✔ quarentena por obra, sem importar parcialmente filhos inválidos (5.4941ms)
+✔ SQL: repetir fonte por outro operador não duplica; autoria legada separada (154.8178ms)
+✔ SQL: falha em filho faz rollback da obra e manifesto; retomada limpa (58.1728ms)
+✔ PWA: um build, cache limitado ao shell e preservação de outros aplicativos (22.6125ms)
+✔ sete HTMLs sem handlers inline ou scripts externos; layout principal preservado (4309.554ms)
+✔ obras: criação por formulário e XSS é mostrado como texto (124.8135ms)
+✔ detalhe: entrada, custo, pedido, aprovação pelo outro operador e totais (324.0617ms)
+✔ dashboard, caixa e agenda usam o mesmo saldo e data; logout limpa DOM (146.144ms)
+✔ login envia com Enter/form e index decide pela sessão (52.9002ms)
+✔ login continua utilizável após sessão não autorizada ser encerrada (54.7534ms)
+ℹ tests 29
+ℹ suites 0
+ℹ pass 29
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 13807.5798

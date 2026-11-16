@@ -1,0 +1,11 @@
+node_modules/
+.local/
+coverage/
+js/config.local.js
+*.log
+supabase/.temp/
+.env
+.env.*
+!.env.example
+*.pem
+*.key

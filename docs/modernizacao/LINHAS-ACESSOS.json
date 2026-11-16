@@ -1,0 +1,202 @@
+[
+  {
+    "arquivo": "database/identity.sql",
+    "linhas": 305,
+    "referencias": [
+      {
+        "simbolo": "create table public.operadores",
+        "linha": 2
+      },
+      {
+        "simbolo": "create function private.credencial_auth_alterada",
+        "linha": 37
+      },
+      {
+        "simbolo": "create or replace function private.membro_ativo",
+        "linha": 87
+      },
+      {
+        "simbolo": "create function private.instalar_admin",
+        "linha": 148
+      },
+      {
+        "simbolo": "create function private.recuperar_admin",
+        "linha": 164
+      },
+      {
+        "simbolo": "create function private.consumir_ativacao",
+        "linha": 245
+      },
+      {
+        "simbolo": "create function private.finalizar_ativacao",
+        "linha": 262
+      },
+      {
+        "simbolo": "-- Explicit grants",
+        "linha": 291
+      }
+    ]
+  },
+  {
+    "arquivo": "server/access.mjs",
+    "linhas": 115,
+    "referencias": [
+      {
+        "simbolo": "export function criarAcesso",
+        "linha": 9
+      },
+      {
+        "simbolo": "async function limiter",
+        "linha": 17
+      },
+      {
+        "simbolo": "async function actor",
+        "linha": 23
+      },
+      {
+        "simbolo": "async function ensureAuth",
+        "linha": 31
+      },
+      {
+        "simbolo": "async function dispatch",
+        "linha": 45
+      }
+    ]
+  },
+  {
+    "arquivo": "server/http.mjs",
+    "linhas": 31,
+    "referencias": [
+      {
+        "simbolo": "export function criarServidorAcesso",
+        "linha": 3
+      }
+    ]
+  },
+  {
+    "arquivo": "server/handler.mjs",
+    "linhas": 28,
+    "referencias": [
+      {
+        "simbolo": "export function criarHandlerAcesso",
+        "linha": 2
+      }
+    ]
+  },
+  {
+    "arquivo": "supabase/functions/acesso/index.ts",
+    "linhas": 11,
+    "referencias": [
+      {
+        "simbolo": "const pool=",
+        "linha": 6
+      },
+      {
+        "simbolo": "Deno.serve",
+        "linha": 11
+      }
+    ]
+  },
+  {
+    "arquivo": "scripts/instalar-administrador.mjs",
+    "linhas": 36,
+    "referencias": [
+      {
+        "simbolo": "export async function instalarAdministrador",
+        "linha": 6
+      }
+    ]
+  },
+  {
+    "arquivo": "js/acesso.js",
+    "linhas": 16,
+    "referencias": [
+      {
+        "simbolo": "export function criarGateway",
+        "linha": 2
+      }
+    ]
+  },
+  {
+    "arquivo": "js/servicos.js",
+    "linhas": 84,
+    "referencias": [
+      {
+        "simbolo": "async entrar",
+        "linha": 30
+      },
+      {
+        "simbolo": "async ativar",
+        "linha": 38
+      },
+      {
+        "simbolo": "async administrar",
+        "linha": 39
+      }
+    ]
+  },
+  {
+    "arquivo": "js/app.js",
+    "linhas": 266,
+    "referencias": [
+      {
+        "simbolo": "if (pagina === 'login')",
+        "linha": 28
+      },
+      {
+        "simbolo": "$('form-ativacao')",
+        "linha": 240
+      }
+    ]
+  },
+  {
+    "arquivo": "js/administracao.js",
+    "linhas": 33,
+    "referencias": [
+      {
+        "simbolo": "export async function iniciarAdministracao",
+        "linha": 3
+      }
+    ]
+  },
+  {
+    "arquivo": "login.html",
+    "linhas": 40,
+    "referencias": [
+      {
+        "simbolo": "<label for=\"usuario\">",
+        "linha": 22
+      },
+      {
+        "simbolo": "<form id=\"form-ativacao\"",
+        "linha": 29
+      }
+    ]
+  },
+  {
+    "arquivo": "tests/native/access.test.mjs",
+    "linhas": 355,
+    "referencias": [
+      {
+        "simbolo": "test('AC01",
+        "linha": 57
+      },
+      {
+        "simbolo": "test('AC23",
+        "linha": 199
+      },
+      {
+        "simbolo": "test('AC31",
+        "linha": 259
+      },
+      {
+        "simbolo": "test('AC34",
+        "linha": 301
+      },
+      {
+        "simbolo": "test('AC38",
+        "linha": 332
+      }
+    ]
+  }
+]

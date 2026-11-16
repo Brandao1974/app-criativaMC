@@ -1,0 +1,20 @@
+
+> test:auth:isolated
+> node scripts/test-auth-local.mjs
+
+Stack exclusivamente local: Auth 2.197.0 (socket Windows adaptado) + PostgREST 14.1 + PostgreSQL 17.11; três fixtures .test.
+✔ GoTrue: senha incorreta não cria sessão (785.1067ms)
+✔ GoTrue/PostgREST: dois logins individuais veem a mesma base (1228.7203ms)
+✔ PostgREST: terceiro bloqueado e DML direto recusado com código de privilégio (938.8116ms)
+✔ GoTrue: logout remove sessão local e consulta anônima é recusada (2280.8066ms)
+✔ GoTrue refresh real e autorização revogada mesmo com JWT renovado (4257.0276ms)
+✔ PostgREST rejeita JWT expirado; SDK renova com refresh válido e recusa refresh revogado (3130.3513ms)
+✔ PostgREST concorrente: uma operação financeira por UUID e aprovação apenas pelo outro operador (973.3536ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 20013.2294

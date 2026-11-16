@@ -2,6 +2,7 @@
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://*.supabase.co wss://*.supabase.co http://127.0.0.1:54321 http://localhost:54321; object-src 'none'; base-uri 'self'; form-action 'self'">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#0c4a6e">
 <meta name="description" content="Agenda operacional das obras agendadas.">
@@ -13,16 +14,18 @@
 <link rel="apple-touch-icon" href="images/apple-touch-icon.png">
 <link rel="stylesheet" href="css/style.css">
 </head>
-<body>
+<body data-pagina="agenda">
+<p id="app-mensagem" class="app-mensagem" role="status" aria-live="polite"></p>
 <canvas id="agenda-confete" class="agenda-confete"></canvas>
-<div class="dashboard agenda-dashboard">
+<div data-private hidden class="dashboard agenda-dashboard">
+<button type="button" class="atualizar-dados" data-action="atualizar">Atualizar dados</button>
 <div class="agenda-topo">
 <div>
 <p class="agenda-eyebrow">Planejamento Operacional</p>
 <h2>Agenda de Obras</h2>
 <p class="agenda-subtitulo">Visualize o fluxo das proximas execucoes, prioridades e responsaveis em ordem cronologica.</p>
 </div>
-<button class="agenda-voltar" onclick="voltarDashboard()">Voltar</button>
+<button class="agenda-voltar" data-action="voltarDashboard">Voltar</button>
 </div>
 <div class="agenda-resumo">
 <div class="agenda-metrica">
@@ -43,6 +46,6 @@
 </div>
 </div>
 <script src="js/pwa.js"></script>
-<script src="js/agenda.js"></script>
+<script type="module" src="js/bootstrap.js"></script>
 </body>
 </html>

@@ -1,0 +1,6 @@
+# Migration checksums must survive Windows/Linux checkouts unchanged.
+database/*.sql text eol=lf
+supabase/migrations/*.sql text eol=lf
+# Diff context and generated JS may contain significant whitespace in literals.
+*.patch -whitespace
+js/vendor/*.js -whitespace

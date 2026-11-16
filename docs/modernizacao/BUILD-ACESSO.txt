@@ -1,0 +1,8 @@
+
+> build
+> node scripts/build-migration.mjs && node scripts/build-corrective.mjs && node scripts/build-identity.mjs && node scripts/vendor.mjs && node scripts/build-pwa.mjs
+
+Migração gerada: 20261115194547_collaborative_ledger.sql
+Migração corretiva gerada: 20261116003827_corrective_review.sql
+Migração de acesso gerada: 20261116020905_three_operator_access.sql
+Build PWA: criativamc-f03a738c7d5482de

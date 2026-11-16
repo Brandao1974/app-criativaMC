@@ -1,0 +1,47 @@
+✔ auth: credenciais encaminhadas ao SDK; membro é validado pelo banco (4.1465ms)
+✔ auth: senha inválida não consulta dados; terceiro autenticado perde sessão local (1.5421ms)
+✔ auth: sem sessão não carrega financeiro; logout notifica limpeza (0.6955ms)
+✔ auth: troca de usuário invalida resposta iniciada com identidade anterior (0.7865ms)
+✔ refresh da mesma identidade revalida autorização sem limpar sessão válida (18.1751ms)
+✔ refresh não mantém acesso de operador desativado; falha de rede não vira logout (28.1107ms)
+✔ resposta de escrita após troca de usuário não é tratada como confirmação (1.2008ms)
+✔ correção: único sucessor; uma nova correção exige aprovar estorno do sucessor (8469.7767ms)
+✔ rede incerta após COMMIT: reload recupera ID, não repete e não persiste payload (27.5336ms)
+✔ rede perdida antes do envio: reload reutiliza UUID; outra ação é bloqueada (46.7618ms)
+✔ encerramento grava tombstone e impede requisição atrasada (13.7949ms)
+✔ duas abas usam o mesmo registro e falha do armazenamento impede envio (13.4922ms)
+✔ regressão v1: múltiplas correções eram possíveis; upgrade recusa duplicatas sem apagar dados (4687.8486ms)
+✔ migração reaplicável e checksum divergente bloqueado (8303.9049ms)
+✔ sem sessão, anônimo e terceiro são bloqueados; metadata não autoriza (94.3463ms)
+✔ criação idempotente e base compartilhada (90.691ms)
+✔ entrada/despesa e saldo exato; valor inválido e campos forjados recusados (127.3578ms)
+✔ pedido não afeta saldo, pendência única e autoaprovação/rejeição bloqueadas (73.5389ms)
+✔ aprovação atômica, estorno integral e retries sem duplicação (79.8695ms)
+✔ rejeição inversa, motivo obrigatório e rollback sem efeito parcial (69.0214ms)
+✔ atualização CAS, evento de agendamento e retry depois da mudança (45.3309ms)
+✔ DML e rotinas administrativas inacessíveis ao cliente (119.1293ms)
+✔ triggers defendem inclusive escrita administrativa inconsistente (30.344ms)
+✔ desativação elimina acesso mesmo com claim anterior (14.2168ms)
+✔ RLS em todas as tabelas e nenhum definer público (9.6012ms)
+✔ vetor financeiro obrigatório, 10 mil centavos e agregado acima de Number seguro (9174.1746ms)
+✔ moeda: parser estrito e totais além de Number sem arredondamento (8228.3139ms)
+✔ dry-run preserva original, categoria, assinaturas e saldo sem inventar ajuste (3.3602ms)
+✔ quarentena por obra, sem importar parcialmente filhos inválidos (4.718ms)
+✔ SQL: repetir fonte por outro operador não duplica; autoria legada separada (168.9546ms)
+✔ SQL: falha em filho faz rollback da obra e manifesto; retomada limpa (70.8069ms)
+✔ PWA: um build, cache limitado ao shell e preservação de outros aplicativos (81.8767ms)
+✔ sete HTMLs sem handlers inline ou scripts externos; layout principal preservado (4371.8533ms)
+✔ obras: criação por formulário e XSS é mostrado como texto (98.2506ms)
+✔ detalhe: entrada, custo, pedido, aprovação pelo outro operador e totais (330.1464ms)
+✔ dashboard, caixa e agenda usam o mesmo saldo e data; logout limpa DOM (108.2728ms)
+✔ login envia com Enter/form e index decide pela sessão (46.1714ms)
+✔ login continua utilizável após sessão não autorizada ser encerrada (63.8171ms)
+✔ reload após resposta perdida confirma a operação anterior sem novo lançamento (130.7583ms)
+ℹ tests 39
+ℹ suites 0
+ℹ pass 39
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 18773.9596

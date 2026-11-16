@@ -1,0 +1,11 @@
+import pg from 'pg';
+import {criarAcesso} from './access.mjs';
+import {criarServidorAcesso} from './http.mjs';
+const required=['ACCESS_DATABASE_URL','SUPABASE_URL','SUPABASE_PUBLIC_KEY','SUPABASE_SECRET_KEY','ACCESS_PEPPER','ACCESS_ORIGINS'];
+if(required.some(k=>!process.env[k]))throw new Error('Configure as variáveis de servidor descritas no runbook.');
+const pool=new pg.Pool({connectionString:process.env.ACCESS_DATABASE_URL,max:5});
+const access=criarAcesso({pool,url:process.env.SUPABASE_URL,publicKey:process.env.SUPABASE_PUBLIC_KEY,secretKey:process.env.SUPABASE_SECRET_KEY,pepper:process.env.ACCESS_PEPPER});
+const server=criarServidorAcesso(access,{origins:process.env.ACCESS_ORIGINS.split(',')});
+server.requestTimeout=15000;server.headersTimeout=10000;
+server.listen(Number(process.env.PORT||4180),'127.0.0.1',()=>console.log('Gateway de acesso iniciado em loopback; use proxy HTTPS para distribuição.'));
+process.on('SIGTERM',()=>server.close(()=>{void pool.end();}));

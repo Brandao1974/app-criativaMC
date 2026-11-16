@@ -1,0 +1,55 @@
+{
+  "data": "2026-11-15",
+  "finalidade": "Preservar os 54 testes anteriores e as migracoes durante o planejamento de acessos; nenhuma nova execucao nesta etapa.",
+  "resultados_anteriores": {
+    "local": 39,
+    "postgres_nativo": 8,
+    "auth_postgrest": 7
+  },
+  "arquivos": [
+    {
+      "arquivo": "supabase/migrations/20261115194547_collaborative_ledger.sql",
+      "sha256": "63f8c8b4c2d469d2f7a29b899fb971049d68949b9ed77364bded397679427bd6"
+    },
+    {
+      "arquivo": "supabase/migrations/20261116003827_corrective_review.sql",
+      "sha256": "52ae4230b867312dfed6896204a36c2713c03728e27d58f6fe824a248df27080"
+    },
+    {
+      "arquivo": "tests/auth.test.mjs",
+      "sha256": "42c244ddc8b5de6f7d8b7addccadbb9e42e8a28c6ab5629c83d7b3bb349f3861"
+    },
+    {
+      "arquivo": "tests/corrective.test.mjs",
+      "sha256": "fd3af1aded23d8064aeb863e017064da19e80a1516144755753fb641a8ac960c"
+    },
+    {
+      "arquivo": "tests/database.test.mjs",
+      "sha256": "59106c0015d005c3612464af6e274229fed514b7352a63d5233d2dd26c342d82"
+    },
+    {
+      "arquivo": "tests/harness.mjs",
+      "sha256": "7a0eae41656f5bec5d5ef1fb333bdde7807010b05176d4e124d5d32c12903582"
+    },
+    {
+      "arquivo": "tests/import.test.mjs",
+      "sha256": "31fb668817ad1b01a63df69991bd06c6e12ead4985dd37712740def7b7ba9dbe"
+    },
+    {
+      "arquivo": "tests/native/auth-api.test.mjs",
+      "sha256": "284d7db274bb15213700a5a36c9a595ab4a894cf9771eb1df350af326c3d35c5"
+    },
+    {
+      "arquivo": "tests/native/concurrency.test.mjs",
+      "sha256": "91e279561f20c7326ac04e4aa389bb5e417681142f3ecc47bf606f8c8826e165"
+    },
+    {
+      "arquivo": "tests/pwa.test.mjs",
+      "sha256": "d55f9bd851c1e414217b585fd3d0600edfcf39289637ed7320097edf0521105b"
+    },
+    {
+      "arquivo": "tests/ui.test.mjs",
+      "sha256": "8e25ed8a610e35c1bda34b32636328e5425c58391e17ff6b2ef33c4724a57cff"
+    }
+  ]
+}

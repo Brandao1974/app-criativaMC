@@ -1,0 +1,2076 @@
+--- revisado-zyra/database/corrective.sql
++++ corretiva/database/corrective.sql
+@@ -0,0 +1,314 @@
++-- Correction round: preserve reviewed v1; apply as a separate migration.
++-- One successor forever; further corrections form a new approved chain.
++create unique index movimentos_uma_correcao on public.obra_movimentos(corrige_id)
++  where corrige_id is not null;
++create or replace function private.validar_movimento() returns trigger
++language plpgsql set search_path = '' as $fn$
++declare original public.obra_movimentos;
++begin
++  if new.estorna_id is not null then
++    select * into strict original from public.obra_movimentos where id = new.estorna_id for update;
++    if original.estorna_id is not null or original.obra_id <> new.obra_id
++      or original.tipo = new.tipo or original.valor_centavos <> new.valor_centavos then
++      raise exception 'Estorno deve ser integral, oposto e da mesma obra' using errcode = '23514';
++    end if;
++  end if;
++  if new.corrige_id is not null then
++    select * into strict original from public.obra_movimentos where id = new.corrige_id for update;
++    if original.estorna_id is not null or original.obra_id <> new.obra_id
++      or original.tipo <> new.tipo
++      or not exists (select 1 from public.obra_movimentos where estorna_id = original.id) then
++      raise exception 'Correção exige original revertido da mesma obra' using errcode = '23514';
++    end if;
++  end if;
++  return new;
++end $fn$;
++create or replace function private.executar(p_acao text, p_dados jsonb, p_operacao uuid) returns jsonb
++language plpgsql security definer set search_path = '' as $fn$
++declare ator uuid; anterior private.operacoes; permitidos text[]; r jsonb;
++  obra public.obras; mov public.obra_movimentos; pedido public.exclusao_solicitacoes;
++  decisao public.exclusao_decisoes; novo_id uuid; alvo uuid;
++begin
++  ator := private.exigir_membro();
++  perform pg_catalog.pg_advisory_xact_lock_shared(194762914);
++  if p_operacao is null or p_dados is null or jsonb_typeof(p_dados) <> 'object' then
++    raise exception 'Operação e objeto são obrigatórios' using errcode = '22023';
++  end if;
++  -- Serializes a retry even when the first attempt has not committed yet.
++  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(ator::text || p_operacao::text, 0));
++  select * into anterior from private.operacoes where autor_id = ator and id = p_operacao;
++  if found then
++    if anterior.acao <> p_acao or anterior.dados <> p_dados then
++      raise exception 'Chave idempotente reutilizada com outro conteúdo' using errcode = '22023';
++    end if;
++    return anterior.resultado;
++  end if;
++  case p_acao
++    when 'criar_obra' then permitidos := array['cliente','descricao','localizacao','responsavel_cliente','valor_centavos'];
++    when 'atualizar_obra' then permitidos := array['id','versao','status','data_execucao'];
++    when 'registrar_movimento' then permitidos := array['obra_id','tipo','categoria','descricao','valor_centavos','corrige_id'];
++    when 'solicitar_exclusao' then permitidos := array['movimento_id','motivo'];
++    when 'decidir_exclusao' then permitidos := array['solicitacao_id','decisao','motivo'];
++    else raise exception 'Ação inválida' using errcode = '22023';
++  end case;
++  if exists (select 1 from jsonb_object_keys(p_dados) k where not (k = any(permitidos))) then
++    raise exception 'Campo não permitido' using errcode = '22023';
++  end if;
++  if p_acao = 'criar_obra' then
++    insert into public.obras(cliente, descricao, localizacao, responsavel_cliente, valor_centavos,
++      status, criado_por, atualizado_por)
++    values (p_dados->>'cliente', p_dados->>'descricao', p_dados->>'localizacao',
++      p_dados->>'responsavel_cliente', (p_dados->>'valor_centavos')::bigint, 'Negociacao', ator, ator)
++    returning id into novo_id;
++  elsif p_acao = 'atualizar_obra' then
++    select * into strict obra from public.obras where id = (p_dados->>'id')::uuid for update;
++    if obra.versao is distinct from (p_dados->>'versao')::bigint then
++      raise exception 'Obra mudou; recarregue antes de salvar' using errcode = '40001';
++    end if;
++    update public.obras set status = coalesce(p_dados->>'status', status),
++      data_execucao = case when p_dados ? 'data_execucao' then (p_dados->>'data_execucao')::date else data_execucao end,
++      atualizado_por = ator, atualizado_em = now(), versao = versao + 1 where id = obra.id;
++    novo_id := obra.id;
++  elsif p_acao = 'registrar_movimento' then
++    insert into public.obra_movimentos(obra_id, tipo, categoria, descricao, valor_centavos, corrige_id, autor_id, operacao_id)
++    values ((p_dados->>'obra_id')::uuid, p_dados->>'tipo', p_dados->>'categoria', p_dados->>'descricao',
++      (p_dados->>'valor_centavos')::bigint, (p_dados->>'corrige_id')::uuid, ator, p_operacao)
++    returning id into novo_id;
++  elsif p_acao = 'solicitar_exclusao' then
++    select * into strict mov from public.obra_movimentos where id = (p_dados->>'movimento_id')::uuid for update;
++    if mov.estorna_id is not null or exists (select 1 from public.obra_movimentos where estorna_id = mov.id) then
++      raise exception 'Movimento já revertido ou estorno' using errcode = '23514';
++    end if;
++    insert into public.exclusao_solicitacoes(movimento_id, solicitante_id, motivo, operacao_id)
++    values (mov.id, ator, p_dados->>'motivo', p_operacao) returning id into novo_id;
++  else
++    -- Read target without lock, then consistent order original -> request.
++    select movimento_id into strict alvo from public.exclusao_solicitacoes where id = (p_dados->>'solicitacao_id')::uuid;
++    select * into strict mov from public.obra_movimentos where id = alvo for update;
++    select * into strict pedido from public.exclusao_solicitacoes where id = (p_dados->>'solicitacao_id')::uuid for update;
++    if pedido.solicitante_id = ator or not exists (
++      select 1 from public.app_membros a join public.app_membros b on a.lugar <> b.lugar
++      where a.usuario_id = pedido.solicitante_id and a.ativo and b.usuario_id = ator and b.ativo
++    ) then raise exception 'Somente o outro operador pode decidir' using errcode = '42501'; end if;
++    if pedido.estado <> 'pendente' then
++      select * into strict decisao from public.exclusao_decisoes where solicitacao_id = pedido.id;
++      if decisao.decisor_id <> ator or decisao.decisao is distinct from p_dados->>'decisao'
++        or decisao.motivo is distinct from p_dados->>'motivo' then
++        raise exception 'Solicitação já decidida' using errcode = '23514';
++      end if;
++      novo_id := pedido.id;
++    else
++      if p_dados->>'decisao' = 'aprovada' then
++        insert into public.obra_movimentos(obra_id, tipo, categoria, descricao, valor_centavos, estorna_id, autor_id, operacao_id)
++        values (mov.obra_id, case when mov.tipo = 'entrada' then 'custo' else 'entrada' end,
++          mov.categoria, 'Estorno integral', mov.valor_centavos, mov.id, ator, p_operacao)
++        returning id into novo_id;
++      else novo_id := null;
++      end if;
++      insert into public.exclusao_decisoes(solicitacao_id, solicitante_id, decisor_id, decisao, motivo, estorno_id)
++      values (pedido.id, pedido.solicitante_id, ator, p_dados->>'decisao', p_dados->>'motivo', novo_id);
++      update public.exclusao_solicitacoes set estado = p_dados->>'decisao' where id = pedido.id;
++      novo_id := pedido.id;
++    end if;
++  end if;
++  r := jsonb_build_object('id', novo_id);
++  insert into private.operacoes values (ator, p_operacao, p_acao, p_dados, r);
++  return r;
++end $fn$;
++
++-- The importer identity comes from the original database login, NEVER a JWT
++-- supplied by a browser or SET ROLE. Only a DBA can provision this allowlist.
++alter table private.importacao_lotes add column login_importador name;
++create table private.importacao_operadores (
++  login_name name primary key,
++  ator_id uuid not null references public.profiles(id) on delete restrict,
++  ativo boolean not null default true,
++  valido_ate timestamptz not null
++);
++alter table private.importacao_operadores enable row level security;
++revoke all on private.importacao_operadores from public, anon, authenticated;
++
++create function private.exigir_importador() returns uuid
++language plpgsql security definer set search_path = '' as $fn$
++declare ator uuid;
++begin
++  select i.ator_id into ator from private.importacao_operadores i
++    join public.app_membros m on m.usuario_id=i.ator_id
++    where i.login_name=session_user and i.ativo and i.valido_ate>statement_timestamp() and m.ativo
++    for share of i,m;
++  if not found then raise exception 'Login administrativo de importação não autorizado' using errcode='42501'; end if;
++  return ator;
++end $fn$;
++revoke all on function private.exigir_importador() from public,anon,authenticated;
++create function private.identidade_importacao() returns jsonb
++language plpgsql security definer set search_path = '' as $fn$
++declare ator uuid;
++begin
++  ator:=private.exigir_importador();
++  return jsonb_build_object('login',session_user,'ator_id',ator);
++end $fn$;
++revoke all on function private.identidade_importacao() from public,anon,authenticated;
++-- Administrative, NOT granted to authenticated, NOT exposed as a public RPC.
++-- Each accepted obra and its children are imported in a single transaction.
++-- Source JSON/hash must be verified by the local offline tool before calling.
++create or replace function private.importar_obra(p_origem uuid, p_chave text, p_sha256 text,
++  p_conteudo jsonb, p_bruto jsonb) returns uuid
++language plpgsql security definer set search_path = '' as $fn$
++declare ator uuid; registro private.importacao_registros; lote uuid;
++  obra_id uuid; item jsonb; ordem integer := 0; claim_anterior text;
++begin
++  ator := private.exigir_importador();
++  perform pg_catalog.pg_advisory_xact_lock(194762914);
++  claim_anterior := current_setting('request.jwt.claim.sub',true);
++  perform set_config('request.jwt.claim.sub',ator::text,true);
++  if p_origem is null or p_chave is null or length(p_chave) = 0
++    or p_sha256 !~ '^[0-9a-f]{64}$' or p_bruto is null then
++    raise exception 'Manifesto inválido' using errcode = '22023';
++  end if;
++  if jsonb_typeof(p_conteudo->'movimentos') is distinct from 'array'
++    or jsonb_array_length(p_conteudo->'movimentos') <>
++      coalesce(jsonb_array_length(p_bruto->'entradas'),0) + coalesce(jsonb_array_length(p_bruto->'custos'),0) then
++    raise exception 'Movimentos convertidos incompletos' using errcode = '22023';
++  end if;
++  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_origem::text || p_chave,0));
++  select * into registro from private.importacao_registros
++    where origem_id = p_origem and entidade = 'obra' and chave_origem = p_chave;
++  if found then
++    if registro.bruto <> p_bruto or registro.hash_conteudo <>
++      encode(sha256(convert_to(jsonb_build_object('convertido',p_conteudo,'bruto',p_bruto)::text,'UTF8')),'hex') then
++      raise exception 'Origem já importada com conteúdo diferente' using errcode = '22023';
++    end if;
++    perform set_config('request.jwt.claim.sub',coalesce(claim_anterior,''),true);
++    return registro.destino_id::uuid;
++  end if;
++  insert into private.importacao_lotes(origem_id,sha256,importado_por,login_importador,versao_conversor,relatorio)
++  values(p_origem,p_sha256,ator,session_user,'1',jsonb_build_object('estado','parcial','origem','legado não verificado'))
++  on conflict (sha256) do nothing;
++  select id into strict lote from private.importacao_lotes where sha256 = p_sha256 and origem_id = p_origem;
++  insert into public.obras(cliente,descricao,localizacao,responsavel_cliente,valor_centavos,status,
++    data_execucao,criado_por,atualizado_por,legado)
++  values(p_conteudo->>'cliente',p_conteudo->>'descricao',p_conteudo->>'localizacao',p_conteudo->>'responsavel_cliente',
++    (p_conteudo->>'valor_centavos')::bigint,p_conteudo->>'status',(p_conteudo->>'data_execucao')::date,ator,ator,p_bruto)
++  returning id into obra_id;
++  for item in select value from jsonb_array_elements(p_conteudo->'movimentos') loop
++    insert into public.obra_movimentos(obra_id,tipo,categoria,descricao,valor_centavos,autor_id,operacao_id,legado)
++    values(obra_id,item->>'tipo',item->>'categoria',item->>'descricao',(item->>'valor_centavos')::bigint,
++      ator,gen_random_uuid(),item->'bruto');
++  end loop;
++  for item in select value from jsonb_array_elements(p_bruto->'historico') loop
++    insert into public.legado_eventos(obra_id,ordem,bruto,importado_por) values(obra_id,ordem,item,ator);
++    ordem := ordem + 1;
++  end loop;
++  insert into private.importacao_registros(origem_id,entidade,chave_origem,lote_id,destino_id,hash_conteudo,bruto,estado)
++  values(p_origem,'obra',p_chave,lote,obra_id::text,
++    encode(sha256(convert_to(jsonb_build_object('convertido',p_conteudo,'bruto',p_bruto)::text,'UTF8')),'hex'),p_bruto,'importado');
++  perform set_config('request.jwt.claim.sub',coalesce(claim_anterior,''),true);
++  return obra_id;
++end $fn$;
++revoke all on function private.importar_obra(uuid,text,text,jsonb,jsonb) from public, anon, authenticated;
++
++create or replace function private.conferir_importacao(p_sha256 text, p_esperado jsonb) returns jsonb
++language plpgsql security definer set search_path = '' as $fn$
++declare lote uuid; observado jsonb; claim_anterior text; ator uuid;
++begin
++  ator := private.exigir_importador();
++  perform pg_catalog.pg_advisory_xact_lock(194762914);
++  claim_anterior := current_setting('request.jwt.claim.sub',true);
++  perform set_config('request.jwt.claim.sub',ator::text,true);
++  select id into strict lote from private.importacao_lotes where sha256 = p_sha256 for update;
++  with obras as (
++    select destino_id::uuid id from private.importacao_registros
++    where lote_id = lote and entidade = 'obra' and estado = 'importado'
++  ), movimentos as (
++    select m.* from public.obra_movimentos m join obras o on o.id = m.obra_id
++    where m.legado is not null
++  )
++  select jsonb_build_object(
++    'obras_validas',(select count(*) from obras),
++    'movimentos',(select count(*) from movimentos),
++    'eventos',(select count(*) from public.legado_eventos e join obras o on o.id = e.obra_id),
++    'entradas_centavos',coalesce((select sum(valor_centavos) from movimentos where tipo='entrada'),0)::text,
++    'custos_centavos',coalesce((select sum(valor_centavos) from movimentos where tipo='custo'),0)::text,
++    'saldo_centavos',coalesce((select sum(case when tipo='entrada' then valor_centavos else -valor_centavos end) from movimentos),0)::text
++  ) into observado;
++  if observado is distinct from p_esperado then
++    raise exception 'Reconciliação da importação divergiu' using errcode = '23514';
++  end if;
++  update private.importacao_lotes set relatorio = jsonb_build_object('estado','conferido','totais',observado,
++    'conferido_por',session_user,'conferido_em',now()) where id = lote;
++  perform set_config('request.jwt.claim.sub',coalesce(claim_anterior,''),true);
++  return observado;
++end $fn$;
++revoke all on function private.conferir_importacao(text,jsonb) from public, anon, authenticated;
++
++-- Opaque recovery IDs may be kept in browser storage; financial payloads stay
++-- exclusively in private.operacoes. This lookup waits for an in-flight command.
++create function private.consultar_operacao(p_operacao uuid) returns jsonb
++language plpgsql security definer set search_path = '' as $fn$
++declare ator uuid; op private.operacoes;
++begin
++  ator:=private.exigir_membro();
++  if p_operacao is null then raise exception 'Identificador obrigatório' using errcode='22023'; end if;
++  perform pg_advisory_xact_lock(hashtextextended(ator::text||p_operacao::text,0));
++  select * into op from private.operacoes where autor_id=ator and id=p_operacao;
++  if not found then return jsonb_build_object('estado','ausente'); end if;
++  return jsonb_build_object('estado',case when op.acao='cancelada' then 'cancelada' else 'concluida' end,
++    'acao',op.acao,'resultado',op.resultado);
++end $fn$;
++
++-- A cancellation is a durable tombstone: a delayed HTTP request with this ID
++-- can no longer create a movement. If already committed, return its result.
++create function private.encerrar_operacao(p_operacao uuid) returns jsonb
++language plpgsql security definer set search_path = '' as $fn$
++declare ator uuid; op private.operacoes;
++begin
++  ator:=private.exigir_membro();
++  if p_operacao is null then raise exception 'Identificador obrigatório' using errcode='22023'; end if;
++  perform pg_advisory_xact_lock_shared(194762914);
++  perform pg_advisory_xact_lock(hashtextextended(ator::text||p_operacao::text,0));
++  select * into op from private.operacoes where autor_id=ator and id=p_operacao;
++  if not found then
++    insert into private.operacoes values(ator,p_operacao,'cancelada','{}','{"cancelada":true}');
++    return jsonb_build_object('estado','cancelada');
++  end if;
++  return jsonb_build_object('estado',case when op.acao='cancelada' then 'cancelada' else 'concluida' end,
++    'acao',op.acao,'resultado',op.resultado);
++end $fn$;
++
++create function public.consultar_operacao(p_operacao uuid) returns jsonb
++language sql security invoker set search_path = '' as $fn$
++  select private.consultar_operacao(p_operacao);
++$fn$;
++create function public.encerrar_operacao(p_operacao uuid) returns jsonb
++language sql security invoker set search_path = '' as $fn$
++  select private.encerrar_operacao(p_operacao);
++$fn$;
++revoke all on function private.consultar_operacao(uuid),private.encerrar_operacao(uuid),
++  public.consultar_operacao(uuid),public.encerrar_operacao(uuid) from public,anon,authenticated;
++grant execute on function private.consultar_operacao(uuid),private.encerrar_operacao(uuid),
++  public.consultar_operacao(uuid),public.encerrar_operacao(uuid) to authenticated;
++
++-- UI receipts are scoped to an actor. Refuse a delayed UI action if the SDK
++-- has switched accounts before acquiring/sending its access token.
++create function public.executar_com_identidade(p_usuario_esperado uuid,p_acao text,p_dados jsonb,p_operacao uuid) returns jsonb
++language plpgsql security invoker set search_path = '' as $fn$
++begin
++  if p_usuario_esperado is null or p_usuario_esperado is distinct from auth.uid() then
++    raise exception 'Sessão mudou antes do envio' using errcode='42501';
++  end if;
++  return private.executar(p_acao,p_dados,p_operacao);
++end $fn$;
++revoke all on function public.executar_com_identidade(uuid,text,jsonb,uuid) from public,anon,authenticated;
++grant execute on function public.executar_com_identidade(uuid,text,jsonb,uuid) to authenticated;
++create function public.recuperar_operacao(p_usuario_esperado uuid,p_operacao uuid,p_encerrar boolean) returns jsonb
++language plpgsql security invoker set search_path = '' as $fn$
++begin
++  if p_usuario_esperado is null or p_usuario_esperado is distinct from auth.uid() then
++    raise exception 'Sessão mudou antes da recuperação' using errcode='42501';
++  end if;
++  if p_encerrar is null then raise exception 'Ação de recuperação obrigatória' using errcode='22023'; end if;
++  if p_encerrar then return private.encerrar_operacao(p_operacao); end if;
++  return private.consultar_operacao(p_operacao);
++end $fn$;
++revoke all on function public.recuperar_operacao(uuid,uuid,boolean) from public,anon,authenticated;
++grant execute on function public.recuperar_operacao(uuid,uuid,boolean) to authenticated;
+--- revisado-zyra/supabase/migrations/20261116003827_corrective_review.sql
++++ corretiva/supabase/migrations/20261116003827_corrective_review.sql
+@@ -0,0 +1,329 @@
++-- Generated from database/corrective.sql.
++begin;
++do $migration$
++declare ddl text := $corrective_body$-- Correction round: preserve reviewed v1; apply as a separate migration.
++-- One successor forever; further corrections form a new approved chain.
++create unique index movimentos_uma_correcao on public.obra_movimentos(corrige_id)
++  where corrige_id is not null;
++create or replace function private.validar_movimento() returns trigger
++language plpgsql set search_path = '' as $fn$
++declare original public.obra_movimentos;
++begin
++  if new.estorna_id is not null then
++    select * into strict original from public.obra_movimentos where id = new.estorna_id for update;
++    if original.estorna_id is not null or original.obra_id <> new.obra_id
++      or original.tipo = new.tipo or original.valor_centavos <> new.valor_centavos then
++      raise exception 'Estorno deve ser integral, oposto e da mesma obra' using errcode = '23514';
++    end if;
++  end if;
++  if new.corrige_id is not null then
++    select * into strict original from public.obra_movimentos where id = new.corrige_id for update;
++    if original.estorna_id is not null or original.obra_id <> new.obra_id
++      or original.tipo <> new.tipo
++      or not exists (select 1 from public.obra_movimentos where estorna_id = original.id) then
++      raise exception 'Correção exige original revertido da mesma obra' using errcode = '23514';
++    end if;
++  end if;
++  return new;
++end $fn$;
++create or replace function private.executar(p_acao text, p_dados jsonb, p_operacao uuid) returns jsonb
++language plpgsql security definer set search_path = '' as $fn$
++declare ator uuid; anterior private.operacoes; permitidos text[]; r jsonb;
++  obra public.obras; mov public.obra_movimentos; pedido public.exclusao_solicitacoes;
++  decisao public.exclusao_decisoes; novo_id uuid; alvo uuid;
++begin
++  ator := private.exigir_membro();
++  perform pg_catalog.pg_advisory_xact_lock_shared(194762914);
++  if p_operacao is null or p_dados is null or jsonb_typeof(p_dados) <> 'object' then
++    raise exception 'Operação e objeto são obrigatórios' using errcode = '22023';
++  end if;
++  -- Serializes a retry even when the first attempt has not committed yet.
++  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(ator::text || p_operacao::text, 0));
++  select * into anterior from private.operacoes where autor_id = ator and id = p_operacao;
++  if found then
++    if anterior.acao <> p_acao or anterior.dados <> p_dados then
++      raise exception 'Chave idempotente reutilizada com outro conteúdo' using errcode = '22023';
++    end if;
++    return anterior.resultado;
++  end if;
++  case p_acao
++    when 'criar_obra' then permitidos := array['cliente','descricao','localizacao','responsavel_cliente','valor_centavos'];
++    when 'atualizar_obra' then permitidos := array['id','versao','status','data_execucao'];
++    when 'registrar_movimento' then permitidos := array['obra_id','tipo','categoria','descricao','valor_centavos','corrige_id'];
++    when 'solicitar_exclusao' then permitidos := array['movimento_id','motivo'];
++    when 'decidir_exclusao' then permitidos := array['solicitacao_id','decisao','motivo'];
++    else raise exception 'Ação inválida' using errcode = '22023';
++  end case;
++  if exists (select 1 from jsonb_object_keys(p_dados) k where not (k = any(permitidos))) then
++    raise exception 'Campo não permitido' using errcode = '22023';
++  end if;
++  if p_acao = 'criar_obra' then
++    insert into public.obras(cliente, descricao, localizacao, responsavel_cliente, valor_centavos,
++      status, criado_por, atualizado_por)
++    values (p_dados->>'cliente', p_dados->>'descricao', p_dados->>'localizacao',
++      p_dados->>'responsavel_cliente', (p_dados->>'valor_centavos')::bigint, 'Negociacao', ator, ator)
++    returning id into novo_id;
++  elsif p_acao = 'atualizar_obra' then
++    select * into strict obra from public.obras where id = (p_dados->>'id')::uuid for update;
++    if obra.versao is distinct from (p_dados->>'versao')::bigint then
++      raise exception 'Obra mudou; recarregue antes de salvar' using errcode = '40001';
++    end if;
++    update public.obras set status = coalesce(p_dados->>'status', status),
++      data_execucao = case when p_dados ? 'data_execucao' then (p_dados->>'data_execucao')::date else data_execucao end,
++      atualizado_por = ator, atualizado_em = now(), versao = versao + 1 where id = obra.id;
++    novo_id := obra.id;
++  elsif p_acao = 'registrar_movimento' then
++    insert into public.obra_movimentos(obra_id, tipo, categoria, descricao, valor_centavos, corrige_id, autor_id, operacao_id)
++    values ((p_dados->>'obra_id')::uuid, p_dados->>'tipo', p_dados->>'categoria', p_dados->>'descricao',
++      (p_dados->>'valor_centavos')::bigint, (p_dados->>'corrige_id')::uuid, ator, p_operacao)
++    returning id into novo_id;
++  elsif p_acao = 'solicitar_exclusao' then
++    select * into strict mov from public.obra_movimentos where id = (p_dados->>'movimento_id')::uuid for update;
++    if mov.estorna_id is not null or exists (select 1 from public.obra_movimentos where estorna_id = mov.id) then
++      raise exception 'Movimento já revertido ou estorno' using errcode = '23514';
++    end if;
++    insert into public.exclusao_solicitacoes(movimento_id, solicitante_id, motivo, operacao_id)
++    values (mov.id, ator, p_dados->>'motivo', p_operacao) returning id into novo_id;
++  else
++    -- Read target without lock, then consistent order original -> request.
++    select movimento_id into strict alvo from public.exclusao_solicitacoes where id = (p_dados->>'solicitacao_id')::uuid;
++    select * into strict mov from public.obra_movimentos where id = alvo for update;
++    select * into strict pedido from public.exclusao_solicitacoes where id = (p_dados->>'solicitacao_id')::uuid for update;
++    if pedido.solicitante_id = ator or not exists (
++      select 1 from public.app_membros a join public.app_membros b on a.lugar <> b.lugar
++      where a.usuario_id = pedido.solicitante_id and a.ativo and b.usuario_id = ator and b.ativo
++    ) then raise exception 'Somente o outro operador pode decidir' using errcode = '42501'; end if;
++    if pedido.estado <> 'pendente' then
++      select * into strict decisao from public.exclusao_decisoes where solicitacao_id = pedido.id;
++      if decisao.decisor_id <> ator or decisao.decisao is distinct from p_dados->>'decisao'
++        or decisao.motivo is distinct from p_dados->>'motivo' then
++        raise exception 'Solicitação já decidida' using errcode = '23514';
++      end if;
++      novo_id := pedido.id;
++    else
++      if p_dados->>'decisao' = 'aprovada' then
++        insert into public.obra_movimentos(obra_id, tipo, categoria, descricao, valor_centavos, estorna_id, autor_id, operacao_id)
++        values (mov.obra_id, case when mov.tipo = 'entrada' then 'custo' else 'entrada' end,
++          mov.categoria, 'Estorno integral', mov.valor_centavos, mov.id, ator, p_operacao)
++        returning id into novo_id;
++      else novo_id := null;
++      end if;
++      insert into public.exclusao_decisoes(solicitacao_id, solicitante_id, decisor_id, decisao, motivo, estorno_id)
++      values (pedido.id, pedido.solicitante_id, ator, p_dados->>'decisao', p_dados->>'motivo', novo_id);
++      update public.exclusao_solicitacoes set estado = p_dados->>'decisao' where id = pedido.id;
++      novo_id := pedido.id;
++    end if;
++  end if;
++  r := jsonb_build_object('id', novo_id);
++  insert into private.operacoes values (ator, p_operacao, p_acao, p_dados, r);
++  return r;
++end $fn$;
++
++-- The importer identity comes from the original database login, NEVER a JWT
++-- supplied by a browser or SET ROLE. Only a DBA can provision this allowlist.
++alter table private.importacao_lotes add column login_importador name;
++create table private.importacao_operadores (
++  login_name name primary key,
++  ator_id uuid not null references public.profiles(id) on delete restrict,
++  ativo boolean not null default true,
++  valido_ate timestamptz not null
++);
++alter table private.importacao_operadores enable row level security;
++revoke all on private.importacao_operadores from public, anon, authenticated;
++
++create function private.exigir_importador() returns uuid
++language plpgsql security definer set search_path = '' as $fn$
++declare ator uuid;
++begin
++  select i.ator_id into ator from private.importacao_operadores i
++    join public.app_membros m on m.usuario_id=i.ator_id
++    where i.login_name=session_user and i.ativo and i.valido_ate>statement_timestamp() and m.ativo
++    for share of i,m;
++  if not found then raise exception 'Login administrativo de importação não autorizado' using errcode='42501'; end if;
++  return ator;
++end $fn$;
++revoke all on function private.exigir_importador() from public,anon,authenticated;
++create function private.identidade_importacao() returns jsonb
++language plpgsql security definer set search_path = '' as $fn$
++declare ator uuid;
++begin
++  ator:=private.exigir_importador();
++  return jsonb_build_object('login',session_user,'ator_id',ator);
++end $fn$;
++revoke all on function private.identidade_importacao() from public,anon,authenticated;
++-- Administrative, NOT granted to authenticated, NOT exposed as a public RPC.
++-- Each accepted obra and its children are imported in a single transaction.
++-- Source JSON/hash must be verified by the local offline tool before calling.
++create or replace function private.importar_obra(p_origem uuid, p_chave text, p_sha256 text,
++  p_conteudo jsonb, p_bruto jsonb) returns uuid
++language plpgsql security definer set search_path = '' as $fn$
++declare ator uuid; registro private.importacao_registros; lote uuid;
++  obra_id uuid; item jsonb; ordem integer := 0; claim_anterior text;
++begin
++  ator := private.exigir_importador();
++  perform pg_catalog.pg_advisory_xact_lock(194762914);
++  claim_anterior := current_setting('request.jwt.claim.sub',true);
++  perform set_config('request.jwt.claim.sub',ator::text,true);
++  if p_origem is null or p_chave is null or length(p_chave) = 0
++    or p_sha256 !~ '^[0-9a-f]{64}$' or p_bruto is null then
++    raise exception 'Manifesto inválido' using errcode = '22023';
++  end if;
++  if jsonb_typeof(p_conteudo->'movimentos') is distinct from 'array'
++    or jsonb_array_length(p_conteudo->'movimentos') <>
++      coalesce(jsonb_array_length(p_bruto->'entradas'),0) + coalesce(jsonb_array_length(p_bruto->'custos'),0) then
++    raise exception 'Movimentos convertidos incompletos' using errcode = '22023';
++  end if;
++  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_origem::text || p_chave,0));
++  select * into registro from private.importacao_registros
++    where origem_id = p_origem and entidade = 'obra' and chave_origem = p_chave;
++  if found then
++    if registro.bruto <> p_bruto or registro.hash_conteudo <>
++      encode(sha256(convert_to(jsonb_build_object('convertido',p_conteudo,'bruto',p_bruto)::text,'UTF8')),'hex') then
++      raise exception 'Origem já importada com conteúdo diferente' using errcode = '22023';
++    end if;
++    perform set_config('request.jwt.claim.sub',coalesce(claim_anterior,''),true);
++    return registro.destino_id::uuid;
++  end if;
++  insert into private.importacao_lotes(origem_id,sha256,importado_por,login_importador,versao_conversor,relatorio)
++  values(p_origem,p_sha256,ator,session_user,'1',jsonb_build_object('estado','parcial','origem','legado não verificado'))
++  on conflict (sha256) do nothing;
++  select id into strict lote from private.importacao_lotes where sha256 = p_sha256 and origem_id = p_origem;
++  insert into public.obras(cliente,descricao,localizacao,responsavel_cliente,valor_centavos,status,
++    data_execucao,criado_por,atualizado_por,legado)
++  values(p_conteudo->>'cliente',p_conteudo->>'descricao',p_conteudo->>'localizacao',p_conteudo->>'responsavel_cliente',
++    (p_conteudo->>'valor_centavos')::bigint,p_conteudo->>'status',(p_conteudo->>'data_execucao')::date,ator,ator,p_bruto)
++  returning id into obra_id;
++  for item in select value from jsonb_array_elements(p_conteudo->'movimentos') loop
++    insert into public.obra_movimentos(obra_id,tipo,categoria,descricao,valor_centavos,autor_id,operacao_id,legado)
++    values(obra_id,item->>'tipo',item->>'categoria',item->>'descricao',(item->>'valor_centavos')::bigint,
++      ator,gen_random_uuid(),item->'bruto');
++  end loop;
++  for item in select value from jsonb_array_elements(p_bruto->'historico') loop
++    insert into public.legado_eventos(obra_id,ordem,bruto,importado_por) values(obra_id,ordem,item,ator);
++    ordem := ordem + 1;
++  end loop;
++  insert into private.importacao_registros(origem_id,entidade,chave_origem,lote_id,destino_id,hash_conteudo,bruto,estado)
++  values(p_origem,'obra',p_chave,lote,obra_id::text,
++    encode(sha256(convert_to(jsonb_build_object('convertido',p_conteudo,'bruto',p_bruto)::text,'UTF8')),'hex'),p_bruto,'importado');
++  perform set_config('request.jwt.claim.sub',coalesce(claim_anterior,''),true);
++  return obra_id;
++end $fn$;
++revoke all on function private.importar_obra(uuid,text,text,jsonb,jsonb) from public, anon, authenticated;
++
++create or replace function private.conferir_importacao(p_sha256 text, p_esperado jsonb) returns jsonb
++language plpgsql security definer set search_path = '' as $fn$
++declare lote uuid; observado jsonb; claim_anterior text; ator uuid;
++begin
++  ator := private.exigir_importador();
++  perform pg_catalog.pg_advisory_xact_lock(194762914);
++  claim_anterior := current_setting('request.jwt.claim.sub',true);
++  perform set_config('request.jwt.claim.sub',ator::text,true);
++  select id into strict lote from private.importacao_lotes where sha256 = p_sha256 for update;
++  with obras as (
++    select destino_id::uuid id from private.importacao_registros
++    where lote_id = lote and entidade = 'obra' and estado = 'importado'
++  ), movimentos as (
++    select m.* from public.obra_movimentos m join obras o on o.id = m.obra_id
++    where m.legado is not null
++  )
++  select jsonb_build_object(
++    'obras_validas',(select count(*) from obras),
++    'movimentos',(select count(*) from movimentos),
++    'eventos',(select count(*) from public.legado_eventos e join obras o on o.id = e.obra_id),
++    'entradas_centavos',coalesce((select sum(valor_centavos) from movimentos where tipo='entrada'),0)::text,
++    'custos_centavos',coalesce((select sum(valor_centavos) from movimentos where tipo='custo'),0)::text,
++    'saldo_centavos',coalesce((select sum(case when tipo='entrada' then valor_centavos else -valor_centavos end) from movimentos),0)::text
++  ) into observado;
++  if observado is distinct from p_esperado then
++    raise exception 'Reconciliação da importação divergiu' using errcode = '23514';
++  end if;
++  update private.importacao_lotes set relatorio = jsonb_build_object('estado','conferido','totais',observado,
++    'conferido_por',session_user,'conferido_em',now()) where id = lote;
++  perform set_config('request.jwt.claim.sub',coalesce(claim_anterior,''),true);
++  return observado;
++end $fn$;
++revoke all on function private.conferir_importacao(text,jsonb) from public, anon, authenticated;
++
++-- Opaque recovery IDs may be kept in browser storage; financial payloads stay
++-- exclusively in private.operacoes. This lookup waits for an in-flight command.
++create function private.consultar_operacao(p_operacao uuid) returns jsonb
++language plpgsql security definer set search_path = '' as $fn$
++declare ator uuid; op private.operacoes;
++begin
++  ator:=private.exigir_membro();
++  if p_operacao is null then raise exception 'Identificador obrigatório' using errcode='22023'; end if;
++  perform pg_advisory_xact_lock(hashtextextended(ator::text||p_operacao::text,0));
++  select * into op from private.operacoes where autor_id=ator and id=p_operacao;
++  if not found then return jsonb_build_object('estado','ausente'); end if;
++  return jsonb_build_object('estado',case when op.acao='cancelada' then 'cancelada' else 'concluida' end,
++    'acao',op.acao,'resultado',op.resultado);
++end $fn$;
++
++-- A cancellation is a durable tombstone: a delayed HTTP request with this ID
++-- can no longer create a movement. If already committed, return its result.
++create function private.encerrar_operacao(p_operacao uuid) returns jsonb
++language plpgsql security definer set search_path = '' as $fn$
++declare ator uuid; op private.operacoes;
++begin
++  ator:=private.exigir_membro();
++  if p_operacao is null then raise exception 'Identificador obrigatório' using errcode='22023'; end if;
++  perform pg_advisory_xact_lock_shared(194762914);
++  perform pg_advisory_xact_lock(hashtextextended(ator::text||p_operacao::text,0));
++  select * into op from private.operacoes where autor_id=ator and id=p_operacao;
++  if not found then
++    insert into private.operacoes values(ator,p_operacao,'cancelada','{}','{"cancelada":true}');
++    return jsonb_build_object('estado','cancelada');
++  end if;
++  return jsonb_build_object('estado',case when op.acao='cancelada' then 'cancelada' else 'concluida' end,
++    'acao',op.acao,'resultado',op.resultado);
++end $fn$;
++
++create function public.consultar_operacao(p_operacao uuid) returns jsonb
++language sql security invoker set search_path = '' as $fn$
++  select private.consultar_operacao(p_operacao);
++$fn$;
++create function public.encerrar_operacao(p_operacao uuid) returns jsonb
++language sql security invoker set search_path = '' as $fn$
++  select private.encerrar_operacao(p_operacao);
++$fn$;
++revoke all on function private.consultar_operacao(uuid),private.encerrar_operacao(uuid),
++  public.consultar_operacao(uuid),public.encerrar_operacao(uuid) from public,anon,authenticated;
++grant execute on function private.consultar_operacao(uuid),private.encerrar_operacao(uuid),
++  public.consultar_operacao(uuid),public.encerrar_operacao(uuid) to authenticated;
++
++-- UI receipts are scoped to an actor. Refuse a delayed UI action if the SDK
++-- has switched accounts before acquiring/sending its access token.
++create function public.executar_com_identidade(p_usuario_esperado uuid,p_acao text,p_dados jsonb,p_operacao uuid) returns jsonb
++language plpgsql security invoker set search_path = '' as $fn$
++begin
++  if p_usuario_esperado is null or p_usuario_esperado is distinct from auth.uid() then
++    raise exception 'Sessão mudou antes do envio' using errcode='42501';
++  end if;
++  return private.executar(p_acao,p_dados,p_operacao);
++end $fn$;
++revoke all on function public.executar_com_identidade(uuid,text,jsonb,uuid) from public,anon,authenticated;
++grant execute on function public.executar_com_identidade(uuid,text,jsonb,uuid) to authenticated;
++create function public.recuperar_operacao(p_usuario_esperado uuid,p_operacao uuid,p_encerrar boolean) returns jsonb
++language plpgsql security invoker set search_path = '' as $fn$
++begin
++  if p_usuario_esperado is null or p_usuario_esperado is distinct from auth.uid() then
++    raise exception 'Sessão mudou antes da recuperação' using errcode='42501';
++  end if;
++  if p_encerrar is null then raise exception 'Ação de recuperação obrigatória' using errcode='22023'; end if;
++  if p_encerrar then return private.encerrar_operacao(p_operacao); end if;
++  return private.consultar_operacao(p_operacao);
++end $fn$;
++revoke all on function public.recuperar_operacao(uuid,uuid,boolean) from public,anon,authenticated;
++grant execute on function public.recuperar_operacao(uuid,uuid,boolean) to authenticated;
++$corrective_body$; existing text;
++begin
++ perform pg_advisory_xact_lock(194762913);
++ select checksum into existing from private.schema_versions where version='corrective_review_v2';
++ if found then
++  if existing<>md5(ddl) then raise exception 'Migration checksum mismatch'; end if;
++  return;
++ end if;
++ execute ddl;
++ insert into private.schema_versions values('corrective_review_v2',md5(ddl));
++end $migration$;
++commit;
+--- revisado-zyra/js/app.js
++++ corretiva/js/app.js
+@@ -2,13 +2,14 @@
+ import { elemento, linhas, dataTexto } from './ui.js';
+ import { mensagemErro } from './servicos.js';
+ import { Chart } from './vendor/chart.js';
++import { criarRecuperacao } from './recuperacao.js';
+ 
+ export async function iniciar(servicos) {
+   const pagina = document.body.dataset.pagina;
+   const $ = id => document.getElementById(id);
+   const aviso = $('app-mensagem');
+   const privados = [...document.querySelectorAll('[data-private]')];
+-  const pendentes = new Map(); // operation IDs retained on ambiguous/network failures
++  const recuperacao=criarRecuperacao(servicos,window.localStorage,window.navigator?.locks);
+   let estado = null, ocupado = false, encerrado = false, grafico = null;
+   const ir = destino => window.location.replace(destino);
+   const nome = id => estado?.perfis.find(p => p.id === id)?.nome || 'Não identificado';
+@@ -20,12 +21,11 @@
+   function limpar() {
+     encerrado = true;
+     estado = null;
+-    pendentes.clear();
+     grafico?.destroy(); grafico = null;
+     for (const el of privados) { el.hidden = true; el.replaceChildren(); }
+   }
+   servicos.aoSair(() => {
+-    if (pagina === 'login') { estado = null; pendentes.clear(); return; }
++    if (pagina === 'login') { estado = null; return; }
+     limpar(); ir('login.html');
+   });
+   async function recarregar() {
+@@ -35,12 +35,33 @@
+     renderizar();
+   }
+   async function executar(acao, dados) {
+-    const chave = JSON.stringify([estado.usuario_id, acao, dados]);
+-    if (!pendentes.has(chave)) pendentes.set(chave, crypto.randomUUID());
+-    await servicos.executar(acao, dados, pendentes.get(chave));
++    const usuario=estado.usuario_id;
++    const resposta=await recuperacao.executar(usuario,acao,dados);
+     await recarregar();
+-    pendentes.delete(chave);
+-    mensagem('Operação concluída. Saldos atualizados.');
++    await recuperacao.confirmar(usuario,resposta.id);
++    mensagem(resposta.recuperada?'Tentativa anterior localizada no servidor. Confira o resultado antes de iniciar uma nova operação.':'Operação concluída. Saldos atualizados.');
++  }
++  function limparFormulario(acao) {
++    const ids=acao==='criar_obra'?['cliente','descricao','localizacao','responsavel-loja','valor']:
++      acao==='registrar_movimento'?['descricao-entrada','valor-entrada','descricao-custo','valor-custo','tipo']:[];
++    for(const id of ids)if($(id)?.tagName==='INPUT')$(id).value='';
++  }
++  async function conferirAnterior(encerramento=false) {
++    const usuario=estado.usuario_id;
++    let anterior=await recuperacao.recuperar(usuario);
++    if(!anterior)return false;
++    if(anterior.estado==='ausente' && encerramento && window.confirm('A tentativa anterior ainda não consta como concluída. Encerrá-la no servidor? Uma mensagem atrasada com o mesmo identificador será bloqueada.')) {
++      anterior=await recuperacao.encerrar(usuario);
++    }
++    if(anterior.estado==='ausente') {
++      mensagem('Há uma tentativa sem confirmação. Refaça a mesma ação com os dados conferidos para reutilizar seu identificador, ou use Atualizar dados para encerrá-la.',true);
++      return true;
++    }
++    await recarregar();
++    await recuperacao.confirmar(usuario,anterior.id);
++    limparFormulario(anterior.acao);
++    mensagem(anterior.estado==='cancelada'?'Tentativa encerrada no servidor. Nenhum envio atrasado com esse identificador será aplicado.':'Operação anterior confirmada no servidor. Confira os dados atualizados antes de repetir qualquer lançamento.');
++    return true;
+   }
+   function campo(id) { return $(id)?.value.trim() ?? ''; }
+   function obraAtual() {
+@@ -183,7 +204,7 @@
+     irObras:()=>{window.location.href='obras.html';},irCaixa:()=>{window.location.href='caixa.html';},irAgenda:()=>{window.location.href='agenda.html';},
+     voltarDashboard:()=>{window.location.href='dashboard.html';},voltar:()=>{window.location.href='obras.html';},
+     logout:async()=>{await servicos.sair();limpar();ir('login.html');},
+-    atualizar:async()=>{await recarregar();mensagem('Dados atualizados.');},
++    atualizar:async()=>{if(!await conferirAnterior(true)){await recarregar();mensagem('Dados atualizados.');}},
+     criarObra:async()=>{
+       if (!campo('cliente')) throw new Error('Informe o cliente.');
+       await executar('criar_obra',{cliente:campo('cliente'),descricao:campo('descricao'),localizacao:campo('localizacao'),responsavel_cliente:campo('responsavel-loja'),valor_centavos:textoParaCentavos(campo('valor'),{zero:true})});
+@@ -227,7 +248,7 @@
+     if (pagina==='index') { ir('dashboard.html'); return; }
+     renderizar();
+     privados.forEach(el=>{el.hidden=false;});
+-    mensagem('');
++    if(!await conferirAnterior())mensagem('');
+   } catch(erro) { mensagem(mensagemErro(erro),true); }
+   return { recarregar, limpar };
+ }
+--- revisado-zyra/js/servicos.js
++++ corretiva/js/servicos.js
+@@ -2,18 +2,26 @@
+   let geracao = 0;
+   let ultimoUsuario = null;
+   const listeners = new Set();
++  function invalidar() {
++    geracao++;
++    for(const listener of listeners)listener();
++  }
+   client.auth.onAuthStateChange((evento, sessao) => {
+     const id = sessao?.user?.id ?? null;
+     if (evento === 'SIGNED_OUT' || (ultimoUsuario && ultimoUsuario !== id)) {
+-      geracao++;
+-      for (const listener of listeners) listener();
++      invalidar();
+     }
+     ultimoUsuario = id;
++    // Outside the SDK callback/lock: refresh is not a new authorization grant.
++    if(evento==='TOKEN_REFRESHED' && id)setTimeout(()=>{void ler().catch(()=>{});},0);
+   });
+   async function ler() {
+     const versao = geracao;
+     const { data, error } = await client.rpc('ler_estado');
+-    if (error) throw error;
++    if (error) {
++      if(error.code==='42501' || error.code==='PGRST301' || error.status===401)invalidar();
++      throw error;
++    }
+     if (versao !== geracao) throw new Error('Sessão mudou. Entre novamente.');
+     return data;
+   }
+@@ -33,9 +41,26 @@
+       return ler();
+     },
+     ler,
+-    async executar(acao, dados, operacao) {
+-      const { data, error } = await client.rpc('executar', { p_acao: acao, p_dados: dados, p_operacao: operacao });
++    async executar(acao, dados, operacao, usuarioEsperado=ultimoUsuario) {
++      const versao=geracao;
++      const { data, error } = await client.rpc('executar_com_identidade', {
++        p_usuario_esperado:usuarioEsperado,p_acao: acao, p_dados: dados, p_operacao: operacao });
+       if (error) throw error;
++      if(versao!==geracao)throw new Error('Sessão mudou. Confira a operação ao entrar novamente.');
++      return data;
++    },
++    async consultar(id,usuarioEsperado=ultimoUsuario) {
++      const versao=geracao;
++      const {data,error}=await client.rpc('recuperar_operacao',{p_usuario_esperado:usuarioEsperado,p_operacao:id,p_encerrar:false});
++      if(error)throw error;
++      if(versao!==geracao)throw new Error('Sessão mudou. Entre novamente.');
++      return data;
++    },
++    async encerrar(id,usuarioEsperado=ultimoUsuario) {
++      const versao=geracao;
++      const {data,error}=await client.rpc('recuperar_operacao',{p_usuario_esperado:usuarioEsperado,p_operacao:id,p_encerrar:true});
++      if(error)throw error;
++      if(versao!==geracao)throw new Error('Sessão mudou. Entre novamente.');
+       return data;
+     },
+     async sair() {
+--- revisado-zyra/js/recuperacao.js
++++ corretiva/js/recuperacao.js
+@@ -0,0 +1,44 @@
++const PREFIXO='criativamc.operacao.v1:';
++const ACOES=new Set(['criar_obra','atualizar_obra','registrar_movimento','solicitar_exclusao','decidir_exclusao']);
++// The ONLY persisted fields are an opaque operation UUID, version and action.
++// No amounts, descriptions, work IDs, request bodies or payload fingerprints.
++export function criarRecuperacao(servicos,storage,locks) {
++  function chave(usuario) { return PREFIXO+usuario; }
++  function ler(usuario) {
++    const raw=storage.getItem(chave(usuario));
++    if(!raw)return null;
++    const p=JSON.parse(raw);
++    if(p.versao!==1 || !/^[0-9a-f-]{36}$/i.test(p.id) || !ACOES.has(p.acao) ||
++       Object.keys(p).some(k=>!['versao','id','acao'].includes(k)))throw new Error('Registro de recuperação inválido; confira a operação no servidor.');
++    return p;
++  }
++  async function exclusivo(usuario,fn) {
++    if(!locks?.request || !storage)throw new Error('O navegador precisa permitir armazenamento de identificadores e bloqueios para salvar com segurança.');
++    return locks.request(chave(usuario),fn);
++  }
++  return {
++    recuperar(usuario) {return exclusivo(usuario,async()=>{
++      const p=ler(usuario);return p?{...p,...await servicos.consultar(p.id,usuario)}:null;
++    });},
++    executar(usuario,acao,dados) {return exclusivo(usuario,async()=>{
++      let p=ler(usuario);
++      if(p) {
++        const anterior=await servicos.consultar(p.id,usuario);
++        if(anterior.estado!=='ausente')return {...p,...anterior,recuperada:true};
++        if(p.acao!==acao)throw new Error('Existe uma tentativa anterior sem confirmação. Use Atualizar dados para conferi-la ou encerrá-la antes de iniciar outra ação.');
++      } else {
++        p={versao:1,id:crypto.randomUUID(),acao};
++        // Persist BEFORE sending. Storage failure must prevent the write.
++        storage.setItem(chave(usuario),JSON.stringify(p));
++      }
++      const resultado=await servicos.executar(acao,dados,p.id,usuario);
++      return {...p,estado:'concluida',resultado,recuperada:false};
++    });},
++    confirmar(usuario,id) {return exclusivo(usuario,async()=>{
++      if(ler(usuario)?.id===id)storage.removeItem(chave(usuario));
++    });},
++    encerrar(usuario) {return exclusivo(usuario,async()=>{
++      const p=ler(usuario);return p?{...p,...await servicos.encerrar(p.id,usuario)}:null;
++    });}
++  };
++}
+--- revisado-zyra/sw.js
++++ corretiva/sw.js
+@@ -1,7 +1,7 @@
+-const BUILD = 'criativamc-b333dac3499d3985';
++const BUILD = 'criativamc-9ca018d045cdff5a';
+ const PREFIX = 'criativamc-';
+ const SHELL = ['index.html','login.html','dashboard.html','obras.html','obras-detalhe.html','caixa.html','agenda.html',
+-'css/style.css','js/bootstrap.js','js/app.js','js/servicos.js','js/config.js','js/ui.js','js/dinheiro.js',
++'css/style.css','js/bootstrap.js','js/app.js','js/servicos.js','js/config.js','js/ui.js','js/dinheiro.js','js/recuperacao.js',
+ 'js/vendor/supabase.js','js/vendor/chart.js','js/agenda-efeitos.js','js/pwa.js','manifest.json','images/web-app-manifest-192x192.png','images/web-app-manifest-512x512.png'];
+ const ALLOWED = new Set(SHELL.map(p => new URL(p,self.registration.scope).href));
+ self.addEventListener('install',e=>{
+--- revisado-zyra/tests/harness.mjs
++++ corretiva/tests/harness.mjs
+@@ -12,13 +12,15 @@
+   grant execute on function auth.uid() to authenticated, anon;`;
+ export async function migration() {
+   const dir = new URL('../supabase/migrations/', import.meta.url);
+-  const file = (await readdir(dir)).find(f => f.endsWith('_collaborative_ledger.sql'));
+-  return readFile(new URL(file, dir), 'utf8');
++  const files = (await readdir(dir)).filter(f => f.endsWith('.sql')).sort();
++  return (await Promise.all(files.map(file=>readFile(new URL(file,dir),'utf8')))).join('\n');
+ }
+ export async function seed(db) {
+   await db.exec(`insert into auth.users values ('${A}'),('${B}'),('${C}');
+     insert into public.profiles(id,nome) values ('${A}','Gustavo'),('${B}','Ivan'),('${C}','Terceiro');
+     insert into public.app_membros(usuario_id,lugar) values ('${A}','gustavo'),('${B}','ivan');`);
++  await db.exec(`insert into private.importacao_operadores(login_name,ator_id,valido_ate)
++    values(session_user,'${A}',now()+interval '1 hour');`);
+ }
+ export async function fixture() {
+   const db = new PGlite();
+--- revisado-zyra/tests/corrective.test.mjs
++++ corretiva/tests/corrective.test.mjs
+@@ -0,0 +1,99 @@
++import { test, before, after } from 'node:test';
++import assert from 'node:assert/strict';
++import { fixture, state, command, as, A, B } from './harness.mjs';
++import { criarRecuperacao } from '../js/recuperacao.js';
++import { PGlite } from '@electric-sql/pglite';
++import { readFile, readdir } from 'node:fs/promises';
++import { bootstrap } from './harness.mjs';
++let db;
++before(async()=>{db=await fixture();});
++after(async()=>{await db?.close();});
++const sqlrpc=(uid,nome,id)=>as(db,uid,async()=> (await db.query(`select public.${nome}($1) as r`,[id])).rows[0].r);
++test('correção: único sucessor; uma nova correção exige aprovar estorno do sucessor',async()=>{
++  const obra=(await command(db,A,'criar_obra',{cliente:'Cadeia',valor_centavos:'10000'})).id;
++  const lancar=(valor,corrige_id)=>command(db,A,'registrar_movimento',{
++    obra_id:obra,tipo:'custo',descricao:'Correção',valor_centavos:valor,...(corrige_id?{corrige_id}:{})});
++  const original=(await lancar('10000')).id;
++  await assert.rejects(lancar('20000',original),/original revertido/);
++  async function reverter(id) {
++    const p=(await command(db,A,'solicitar_exclusao',{movimento_id:id,motivo:'Valor incorreto'})).id;
++    await command(db,B,'decidir_exclusao',{solicitacao_id:p,decisao:'aprovada',motivo:'Conferido'});
++  }
++  await reverter(original);
++  await assert.rejects(command(db,A,'registrar_movimento',{obra_id:obra,tipo:'entrada',descricao:'Natureza diferente',valor_centavos:'20000',corrige_id:original}),/Correção exige/);
++  const primeiro=(await lancar('20000',original)).id;
++  await assert.rejects(lancar('30000',original),/duplicate key/);
++  await assert.rejects(lancar('15000',primeiro),/original revertido/);
++  await reverter(primeiro);
++  await lancar('15000',primeiro);
++  assert.equal((await state(db)).resumos.find(r=>r.obra_id===obra).saldo_centavos,'-15000');
++});
++
++function ambiente(uid,exec) {
++  const memoria=new Map();let fila=Promise.resolve();
++  const storage={getItem:k=>memoria.get(k)??null,setItem:(k,v)=>memoria.set(k,v),removeItem:k=>memoria.delete(k)};
++  const locks={request(_key,fn){const proxima=fila.then(fn);fila=proxima.catch(()=>{});return proxima;}};
++  const servicos={executar:exec,consultar:id=>sqlrpc(uid,'consultar_operacao',id),encerrar:id=>sqlrpc(uid,'encerrar_operacao',id)};
++  return {memoria,storage,locks,servicos,nova:()=>criarRecuperacao(servicos,storage,locks)};
++}
++test('rede incerta após COMMIT: reload recupera ID, não repete e não persiste payload',async()=>{
++  let chamadas=0;
++  const a=ambiente(A,async(acao,dados,id)=>{chamadas++;await command(db,A,acao,dados,id);throw new Error('Resposta perdida');});
++  const dados={cliente:'Cliente confidencial fixture',valor_centavos:'987654'};
++  await assert.rejects(a.nova().executar(A,'criar_obra',dados),/Resposta perdida/);
++  const persistido=[...a.memoria.values()][0];
++  assert.deepEqual(Object.keys(JSON.parse(persistido)).sort(),['acao','id','versao']);
++  assert.ok(!persistido.includes('987654')&&!persistido.includes('confidencial'));
++  const nova=a.nova();const recuperado=await nova.recuperar(A);assert.equal(recuperado.estado,'concluida');
++  const r=await nova.executar(A,'criar_obra',dados);assert.equal(r.recuperada,true);assert.equal(chamadas,1);
++  await nova.confirmar(A,r.id);assert.equal(a.memoria.size,0);
++});
++test('rede perdida antes do envio: reload reutiliza UUID; outra ação é bloqueada',async()=>{
++  const ids=[];let falhar=true;
++  const a=ambiente(A,async(acao,dados,id)=>{ids.push(id);if(falhar)throw new Error('Sem rede');return command(db,A,acao,dados,id);});
++  const dados={cliente:'Retry',valor_centavos:'1'};
++  await assert.rejects(a.nova().executar(A,'criar_obra',dados));
++  assert.equal((await a.nova().recuperar(A)).estado,'ausente');
++  await assert.rejects(a.nova().executar(A,'registrar_movimento',{}),/tentativa anterior/);
++  falhar=false;await a.nova().executar(A,'criar_obra',dados);assert.equal(ids[0],ids[1]);
++});
++test('encerramento grava tombstone e impede requisição atrasada',async()=>{
++  const a=ambiente(B,async()=>{throw new Error('Sem rede');});
++  await assert.rejects(a.nova().executar(B,'criar_obra',{cliente:'Tardia',valor_centavos:'1'}));
++  const p=JSON.parse([...a.memoria.values()][0]);
++  assert.equal((await a.nova().encerrar(B)).estado,'cancelada');
++  await assert.rejects(command(db,B,'criar_obra',{cliente:'Tardia',valor_centavos:'1'},p.id),/idempotente/);
++  assert.equal((await sqlrpc(A,'consultar_operacao',p.id)).estado,'ausente');
++});
++test('duas abas usam o mesmo registro e falha do armazenamento impede envio',async()=>{
++  let chamadas=0;
++  const a=ambiente(B,async(...args)=>{chamadas++;return command(db,B,...args);});
++  const r=await Promise.all([a.nova().executar(B,'criar_obra',{cliente:'Duas abas',valor_centavos:'1'}),a.nova().executar(B,'criar_obra',{cliente:'Duas abas',valor_centavos:'1'})]);
++  assert.equal(r[0].id,r[1].id);assert.equal(chamadas,1);
++  a.storage.getItem=()=>null;a.storage.setItem=()=>{throw new Error('Storage bloqueado');};
++  await assert.rejects(a.nova().executar(B,'criar_obra',{cliente:'Não enviar',valor_centavos:'1'}),/Storage bloqueado/);
++  assert.equal(chamadas,1);
++});
++test('regressão v1: múltiplas correções eram possíveis; upgrade recusa duplicatas sem apagar dados',async()=>{
++  const antigo=new PGlite();
++  try{
++    await antigo.exec(bootstrap);
++    const dir=new URL('../supabase/migrations/',import.meta.url);
++    const files=await readdir(dir);
++    await antigo.exec(await readFile(new URL(files.find(f=>f.endsWith('_collaborative_ledger.sql')),dir),'utf8'));
++    await antigo.exec(`insert into auth.users values('${A}'),('${B}');
++      insert into public.profiles(id,nome) values('${A}','Gustavo'),('${B}','Ivan');
++      insert into public.app_membros(usuario_id,lugar) values('${A}','gustavo'),('${B}','ivan');`);
++    const obra=(await command(antigo,A,'criar_obra',{cliente:'Regressão',valor_centavos:'10000'})).id;
++    const base={obra_id:obra,tipo:'custo',descricao:'Fixture',valor_centavos:'10000'};
++    const original=(await command(antigo,A,'registrar_movimento',base)).id;
++    const p=(await command(antigo,A,'solicitar_exclusao',{movimento_id:original,motivo:'Corrigir fixture'})).id;
++    await command(antigo,B,'decidir_exclusao',{solicitacao_id:p,decisao:'aprovada',motivo:'Conferido'});
++    await command(antigo,A,'registrar_movimento',{...base,corrige_id:original});
++    await command(antigo,B,'registrar_movimento',{...base,corrige_id:original});
++    assert.equal((await state(antigo)).movimentos.filter(m=>m.corrige_id===original).length,2);
++    await assert.rejects(antigo.exec(await readFile(new URL(files.find(f=>f.endsWith('_corrective_review.sql')),dir),'utf8')),/unique index/);
++    await antigo.exec('rollback');
++    assert.equal((await state(antigo)).movimentos.filter(m=>m.corrige_id===original).length,2);
++  }finally{await antigo.close();}
++});
+--- revisado-zyra/tests/auth.test.mjs
++++ corretiva/tests/auth.test.mjs
+@@ -36,3 +36,26 @@
+   resolver({data:{usuario_id:'a'},error:null});
+   await assert.rejects(pendente,/Sessão mudou/);
+ });
++test('refresh da mesma identidade revalida autorização sem limpar sessão válida',async()=>{
++  const c=cliente();const s=criarServicos(c);let limpezas=0;s.aoSair(()=>{limpezas++;});
++  await s.sessao();const antes=c.calls.filter(x=>x==='ler_estado').length;
++  c.emit('TOKEN_REFRESHED',{user:{id:'a'}});
++  await new Promise(r=>setTimeout(r,15));
++  assert.equal(c.calls.filter(x=>x==='ler_estado').length,antes+1);assert.equal(limpezas,0);
++});
++test('refresh não mantém acesso de operador desativado; falha de rede não vira logout',async()=>{
++  const c=cliente();const s=criarServicos(c);let limpezas=0;s.aoSair(()=>{limpezas++;});
++  await s.sessao();c.rpc=async()=>({data:null,error:{code:'42501'}});
++  c.emit('TOKEN_REFRESHED',{user:{id:'a'}});await new Promise(r=>setTimeout(r,15));
++  assert.equal(limpezas,1);
++  const rede=cliente();const sr=criarServicos(rede);let saiu=false;sr.aoSair(()=>{saiu=true;});
++  await sr.sessao();rede.rpc=async()=>({data:null,error:{message:'network'}});
++  await assert.rejects(sr.ler());assert.equal(saiu,false);
++});
++test('resposta de escrita após troca de usuário não é tratada como confirmação',async()=>{
++  const c=cliente();const s=criarServicos(c);await s.sessao();let resolver;
++  c.rpc=()=>new Promise(r=>{resolver=r;});
++  const resposta=s.executar('criar_obra',{},'uuid-fixture');
++  c.emit('SIGNED_IN',{user:{id:'b'}});resolver({data:{id:'fixture'},error:null});
++  await assert.rejects(resposta,/Sessão mudou/);
++});
+--- revisado-zyra/tests/ui.test.mjs
++++ corretiva/tests/ui.test.mjs
+@@ -3,20 +3,24 @@
+ import { JSDOM } from 'jsdom';
+ import { readFile } from 'node:fs/promises';
+ import { iniciar } from '../js/app.js';
+-import { fixture, command, state, A, B } from './harness.mjs';
++import { fixture, command, state, as, A, B } from './harness.mjs';
+ let db;
+ before(async()=>{db=await fixture();});
+ after(async()=>{await db?.close();});
+-async function tela(nome,uid=A,id='') {
++async function tela(nome,uid=A,id='',persistido={}) {
+   const html=await readFile(new URL(`../${nome}.html`,import.meta.url),'utf8');
+   const dom=new JSDOM(html,{url:`http://127.0.0.1:4173/${nome}.html${id?'?id='+id:''}`});
+   globalThis.document=dom.window.document;
++  for(const [k,v] of Object.entries(persistido))dom.window.localStorage.setItem(k,v);
+   const destinos=[];let sair;
+-  globalThis.window={location:{search:id?'?id='+id:'',replace:v=>destinos.push(v)},prompt:()=> 'Conferido'};
++  globalThis.window={location:{search:id?'?id='+id:'',replace:v=>destinos.push(v)},prompt:()=> 'Conferido',confirm:()=>true,
++    localStorage:dom.window.localStorage,navigator:{locks:{request:async(_key,fn)=>fn()}}};
+   // jsdom has no native canvas; explicitly exercise graceful chart failure.
+   dom.window.HTMLCanvasElement.prototype.getContext=()=>{throw new Error('Canvas indisponível no teste DOM');};
+   const ler=async()=>({...await state(db,uid),hoje:'2026-11-15'});
+   const servicos={aoSair:fn=>{sair=fn;},sessao:ler,ler,
++    consultar:id=>as(db,uid,async()=> (await db.query('select public.consultar_operacao($1) as r',[id])).rows[0].r),
++    encerrar:id=>as(db,uid,async()=> (await db.query('select public.encerrar_operacao($1) as r',[id])).rows[0].r),
+     executar:(acao,dados,op)=>command(db,uid,acao,dados,op),entrar:async()=>{},sair:async()=>{sair();}};
+   const controle=await iniciar(servicos);
+   return {dom,servicos,destinos,controle,$:s=>dom.window.document.querySelector(s)};
+@@ -103,3 +107,19 @@
+   }
+   assert.equal(tentativas,2);assert.ok(t.destinos.includes('dashboard.html'));t.dom.window.close();
+ });
++test('reload após resposta perdida confirma a operação anterior sem novo lançamento',async()=>{
++  let t=await tela('obras');let chamadas=0;
++  t.servicos.executar=async(acao,dados,id)=>{chamadas++;await command(db,A,acao,dados,id);throw new Error('Resposta perdida');};
++  t.$('#cliente').value='Fixture resultado incerto';t.$('#valor').value='77.31';
++  await click(t,'[data-action=criarObra]');
++  const persistido={};for(let i=0;i<t.dom.window.localStorage.length;i++){
++    const key=t.dom.window.localStorage.key(i);persistido[key]=t.dom.window.localStorage.getItem(key);
++  }
++  assert.equal(Object.keys(persistido).length,1);
++  t.dom.window.close();
++  t=await tela('obras',A,'',persistido);
++  assert.match(t.$('#app-mensagem').textContent,/anterior confirmada/);
++  assert.equal(t.dom.window.localStorage.length,0);assert.equal(t.$('#cliente').value,'');
++  assert.equal((await state(db)).obras.filter(o=>o.cliente==='Fixture resultado incerto').length,1);
++  assert.equal(chamadas,1);t.dom.window.close();
++});
+--- revisado-zyra/tests/native/concurrency.test.mjs
++++ corretiva/tests/native/concurrency.test.mjs
+@@ -5,8 +5,11 @@
+ import { randomUUID } from 'node:crypto';
+ import pg from 'pg';
+ import { bootstrap, migration, seed, A, B } from '../harness.mjs';
++import { planejarImportacao } from '../../js/importacao.js';
++import { aplicarPlano, validarPlano } from '../../scripts/aplicar-importacao-local.mjs';
++import { createHash, randomBytes } from 'node:crypto';
+ const endereco=process.env.LOCAL_PG_URL;
+-let admin,config,nome,role,anon,ready=false;
++let admin,config,nome,role,anon,importer,apiLogin,ready=false;
+ const conexoes=new Set();
+ before(async()=>{
+   if(!endereco)return;
+@@ -28,6 +31,8 @@
+   for(const c of conexoes)await c.end();
+   if(admin){
+     if(nome)await admin.query(`drop database if exists ${nome}`);
++    if(apiLogin)await admin.query(`drop role if exists ${apiLogin}`);
++    if(importer)await admin.query(`drop role if exists ${importer}`);
+     if(role)await admin.query(`drop role if exists ${role}`);
+     if(anon)await admin.query(`drop role if exists ${anon}`);
+     await admin.end();
+@@ -78,3 +83,86 @@
+   assert.equal(r[0].id,r[1].id);
+   assert.equal((await ler()).movimentos.filter(m=>m.estorna_id===mov).length,1);
+ });
++test('login administrativo real: mínimo privilégio e autoria pelo session_user',opcoes,async()=>{
++  const dba=new pg.Client(config);await dba.connect();
++  importer=role.replace('codex_auth_','codex_import_');
++  const password=randomBytes(24).toString('base64url');
++  await dba.query(`create role ${importer} login noinherit password ${dba.escapeLiteral(password)}`);
++  await dba.query(`grant usage on schema private to ${importer};
++    grant execute on function private.identidade_importacao(),private.importar_obra(uuid,text,text,jsonb,jsonb),private.conferir_importacao(text,jsonb) to ${importer};
++    insert into private.importacao_operadores values('${importer}','${A}',true,now()+interval '1 hour');`);
++  const url=new URL(config.connectionString);url.username=importer;url.password=password;
++  const c=new pg.Client({connectionString:url.href});await c.connect();
++  try{
++    const source={formato:'app-criativaMC-localstorage-bruto-v1',valoresBrutos:{obras:JSON.stringify([
++      {id:1,cliente:'Importação fixture',status:'Negociacao',valor:100,entradas:[{descricao:'Recebido',valor:100}],custos:[],historico:[]}
++    ]),caixa:'100'}};
++    const bytes=Buffer.from(JSON.stringify(source));
++    const plano={...planejarImportacao(source,randomUUID()),sha256:createHash('sha256').update(bytes).digest('hex')};
++    assert.throws(()=>validarPlano(Buffer.from('alterado'),plano),/SHA-256/);
++    assert.throws(()=>validarPlano(bytes,{...plano,totais:{}}),/Plano difere/);
++    await c.query("select set_config('request.jwt.claim.sub',$1,false)",[B]);
++    const r=await aplicarPlano(c,bytes,plano);
++    assert.equal(r.identidade.login,importer);assert.equal(r.identidade.ator_id,A);
++    await aplicarPlano(c,bytes,plano);
++    for(const sql of ['select * from public.obras','delete from public.obras','select * from private.importacao_operadores'])await assert.rejects(c.query(sql),/permission denied/);
++    const s=await ler();const o=s.obras.find(o=>o.cliente==='Importação fixture');
++    assert.equal(o.criado_por,A);assert.equal(s.movimentos.filter(m=>m.obra_id===o.id).length,1);
++    const conflitoSource=structuredClone(source);
++    const item=JSON.parse(source.valoresBrutos.obras)[0];
++    conflitoSource.valoresBrutos.obras=JSON.stringify([{...item,id:2,cliente:'Rollback do lote'}, {...item,cliente:'Origem alterada'}]);
++    const conflitBytes=Buffer.from(JSON.stringify(conflitoSource));
++    const conflitPlano={...planejarImportacao(conflitoSource,plano.origem_id),sha256:createHash('sha256').update(conflitBytes).digest('hex')};
++    await assert.rejects(aplicarPlano(c,conflitBytes,conflitPlano),/conteúdo diferente/);
++    assert.equal((await ler()).obras.filter(o=>o.cliente==='Rollback do lote').length,0);
++    await dba.query(`update private.importacao_operadores set valido_ate=now()-interval '1 second' where login_name='${importer}'`);
++    await assert.rejects(aplicarPlano(c,bytes,plano),/administrativo.*não autorizado/);
++  }finally{await c.end();await dba.end();}
++});
++test('API não pode simular login importador nem com claim de operador válido',opcoes,async()=>{
++  const dba=new pg.Client(config);await dba.connect();
++  apiLogin=role.replace('codex_auth_','codex_api_');const password=randomBytes(24).toString('base64url');
++  await dba.query(`create role ${apiLogin} login noinherit password ${dba.escapeLiteral(password)};
++    grant ${role} to ${apiLogin}; grant execute on function private.identidade_importacao() to ${role};`);
++  const url=new URL(config.connectionString);url.username=apiLogin;url.password=password;
++  const c=new pg.Client({connectionString:url.href});await c.connect();
++  try{
++    await c.query(`set role ${role}`);await c.query("select set_config('request.jwt.claim.sub',$1,false)",[A]);
++    await assert.rejects(c.query('select private.identidade_importacao()'),/administrativo.*não autorizado/);
++  }finally{await c.end();await dba.query(`revoke execute on function private.identidade_importacao() from ${role}`);await dba.end();}
++});
++test('correções concorrentes: só um sucessor do original revertido',opcoes,async()=>{
++  const obra=(await executar(A,'criar_obra',{cliente:'Correção concorrente',valor_centavos:'10000'})).id;
++  const mov=(await executar(A,'registrar_movimento',{obra_id:obra,tipo:'custo',descricao:'Original',valor_centavos:'10000'})).id;
++  const pedido=(await executar(A,'solicitar_exclusao',{movimento_id:mov,motivo:'Correção'})).id;
++  await executar(B,'decidir_exclusao',{solicitacao_id:pedido,decisao:'aprovada',motivo:'Conferido'});
++  const r=await Promise.allSettled([A,B].map(uid=>executar(uid,'registrar_movimento',{
++    obra_id:obra,tipo:'custo',descricao:'Substituto',valor_centavos:'20000',corrige_id:mov})));
++  assert.equal(r.filter(x=>x.status==='fulfilled').length,1);
++  assert.equal((await ler()).movimentos.filter(m=>m.corrige_id===mov).length,1);
++});
++test('encerramento x envio concorrente: um efeito ou tombstone, nunca duplicação',opcoes,async()=>{
++  const id=randomUUID();const c=new pg.Client(config);await c.connect();
++  try{
++    await c.query(`set role ${role}`);await c.query("select set_config('request.jwt.claim.sub',$1,false)",[A]);
++    await Promise.allSettled([executar(A,'criar_obra',{cliente:'Envio atrasado',valor_centavos:'1'},id),c.query('select public.encerrar_operacao($1)',[id])]);
++    const consulta=(await c.query('select public.consultar_operacao($1) as r',[id])).rows[0].r;
++    const qtd=(await ler()).obras.filter(o=>o.cliente==='Envio atrasado').length;
++    assert.equal(qtd,consulta.estado==='cancelada'?0:1);
++  }finally{await c.end();}
++});
++test('janela de importação bloqueia escrita concorrente até o fim da transação',opcoes,async()=>{
++  const janela=new pg.Client(config);await janela.connect();let liberada=false,escrita;
++  try{
++    await janela.query('begin');await janela.query('select pg_advisory_xact_lock(194762914)');
++    escrita=executar(A,'criar_obra',{cliente:'Após janela',valor_centavos:'1'});
++    let esperando=false;const limite=Date.now()+5000;
++    while(!esperando && Date.now()<limite){
++      esperando=(await admin.query("select exists(select 1 from pg_stat_activity where datname=$1 and wait_event='advisory' and query like 'select public.executar%') as espera",[nome])).rows[0].espera;
++      if(!esperando)await new Promise(r=>setTimeout(r,20));
++    }
++    assert.equal(esperando,true,'Escrita precisa aguardar o lock de manutenção');
++    await janela.query('commit');liberada=true;await escrita;
++    assert.equal((await ler()).obras.filter(o=>o.cliente==='Após janela').length,1);
++  }finally{if(!liberada)await janela.query('rollback');await escrita?.catch(()=>{});await janela.end();}
++});
+--- revisado-zyra/tests/native/auth-api.test.mjs
++++ corretiva/tests/native/auth-api.test.mjs
+@@ -3,6 +3,9 @@
+ import { test, after } from 'node:test';
+ import assert from 'node:assert/strict';
+ import { createClient } from '@supabase/supabase-js';
++import pg from 'pg';
++import { createHmac, randomUUID } from 'node:crypto';
++import { criarServicos } from '../../js/servicos.js';
+ const nomes=['LOCAL_SUPABASE_URL','LOCAL_SUPABASE_PUBLIC_KEY','LOCAL_QA_A_EMAIL','LOCAL_QA_A_PASSWORD',
+   'LOCAL_QA_B_EMAIL','LOCAL_QA_B_PASSWORD','LOCAL_QA_C_EMAIL','LOCAL_QA_C_PASSWORD'];
+ const habilitado=nomes.every(n=>process.env[n]);
+@@ -30,10 +33,13 @@
+ });
+ test('GoTrue/PostgREST: dois logins individuais veem a mesma base',opcoes,async()=>{
+   const [a,b]=await Promise.all([entrar('A'),entrar('B')]);
++  const criada=await a.rpc('executar',{p_acao:'criar_obra',p_dados:{cliente:'Fixture compartilhada',valor_centavos:'0'},p_operacao:randomUUID()});
++  assert.equal(criada.error,null);
+   const [sa,sb]=await Promise.all([a.rpc('ler_estado'),b.rpc('ler_estado')]);
+   assert.equal(sa.error,null);assert.equal(sb.error,null);
+   assert.notEqual(sa.data.usuario_id,sb.data.usuario_id);
+   assert.deepEqual(sa.data.obras.map(o=>o.id),sb.data.obras.map(o=>o.id));
++  assert.ok(sa.data.obras.some(o=>o.id===criada.data.id));
+   assert.deepEqual(sa.data.movimentos.map(o=>o.id),sb.data.movimentos.map(o=>o.id));
+ });
+ test('PostgREST: terceiro bloqueado e DML direto recusado com código de privilégio',opcoes,async()=>{
+@@ -41,9 +47,72 @@
+   assert.equal((await c.rpc('ler_estado')).error?.code,'42501');
+   const r=await a.from('obra_movimentos').update({valor_centavos:'1'}).eq('id','00000000-0000-4000-8000-000000000000');
+   assert.equal(r.error?.code,'42501');
++  assert.equal((await a.schema('private').rpc('identidade_importacao')).error?.code,'PGRST106');
+ });
+ test('GoTrue: logout remove sessão local e consulta anônima é recusada',opcoes,async()=>{
+   const a=await entrar('A');await a.auth.signOut({scope:'local'});
+   assert.equal((await a.auth.getSession()).data.session,null);
+   assert.ok((await a.rpc('ler_estado')).error);
+ });
++const estendido={skip:!habilitado||!process.env.LOCAL_AUTH_PG_URL||!process.env.LOCAL_AUTH_JWT_SECRET?'Stack local completa necessária':false};
++async function banco() {
++  const url=new URL(process.env.LOCAL_AUTH_PG_URL);
++  if(!['127.0.0.1','localhost','[::1]'].includes(url.hostname))throw new Error('DB Auth somente loopback');
++  const c=new pg.Client({connectionString:url.href});await c.connect();return c;
++}
++function expirado(usuario) {
++  const h=Buffer.from(JSON.stringify({alg:'HS256',typ:'JWT'})).toString('base64url');
++  const p=Buffer.from(JSON.stringify({sub:usuario,role:'authenticated',aud:'authenticated',exp:Math.floor(Date.now()/1000)-120})).toString('base64url');
++  return `${h}.${p}.${createHmac('sha256',process.env.LOCAL_AUTH_JWT_SECRET).update(h+'.'+p).digest('base64url')}`;
++}
++test('GoTrue refresh real e autorização revogada mesmo com JWT renovado',estendido,async()=>{
++  const a=await entrar('A');const inicial=(await a.auth.getSession()).data.session;
++  const servicos=criarServicos(a);let limpezas=0;servicos.aoSair(()=>{limpezas++;});await servicos.sessao();
++  assert.equal((await a.auth.refreshSession()).error,null);
++  assert.equal((await a.rpc('ler_estado')).error,null);
++  assert.equal(limpezas,0);
++  const db=await banco();
++  try{
++    await db.query('update public.app_membros set ativo=false where usuario_id=$1',[inicial.user.id]);
++    assert.equal((await a.auth.refreshSession()).error,null);
++    assert.equal((await a.rpc('ler_estado')).error?.code,'42501');
++    const limite=Date.now()+3000;
++    while(!limpezas && Date.now()<limite)await new Promise(r=>setTimeout(r,10));
++    assert.ok(limpezas>0,'Serviço deve invalidar dados privados após refresh com vínculo revogado');
++  }finally{await db.query('update public.app_membros set ativo=true where usuario_id=$1',[inicial.user.id]);await db.end();}
++});
++test('PostgREST rejeita JWT expirado; SDK renova com refresh válido e recusa refresh revogado',estendido,async()=>{
++  const a=await entrar('A');const s=(await a.auth.getSession()).data.session;
++  const vencido=expirado(s.user.id);
++  const resposta=await fetch(process.env.LOCAL_SUPABASE_URL+'/rest/v1/rpc/ler_estado',{
++    method:'POST',headers:{apikey:process.env.LOCAL_SUPABASE_PUBLIC_KEY,Authorization:'Bearer '+vencido,'Content-Type':'application/json'},body:'{}'});
++  assert.equal(resposta.status,401);
++  const b=client();assert.equal((await b.auth.setSession({access_token:vencido,refresh_token:s.refresh_token})).error,null);
++  assert.equal((await b.rpc('ler_estado')).error,null);
++  const novo=(await b.auth.getSession()).data.session;
++  await b.auth.signOut({scope:'global'});
++  const c=client();assert.ok((await c.auth.setSession({access_token:expirado(novo.user.id),refresh_token:novo.refresh_token})).error);
++  assert.equal((await c.auth.getSession()).data.session,null);
++});
++test('PostgREST concorrente: uma operação financeira por UUID e aprovação apenas pelo outro operador',opcoes,async()=>{
++  const [a,b]=await Promise.all([entrar('A'),entrar('B')]);
++  const aId=(await a.auth.getSession()).data.session.user.id;
++  const bId=(await b.auth.getSession()).data.session.user.id;
++  const bound={p_usuario_esperado:bId,p_acao:'criar_obra',p_dados:{cliente:'Não deve existir',valor_centavos:'1'},p_operacao:randomUUID()};
++  assert.equal((await a.rpc('executar_com_identidade',bound)).error?.code,'42501');
++  assert.equal((await a.rpc('recuperar_operacao',{p_usuario_esperado:bId,p_operacao:bound.p_operacao,p_encerrar:true})).error?.code,'42501');
++  assert.equal((await a.rpc('executar_com_identidade',{...bound,p_usuario_esperado:aId,p_dados:{cliente:'Fixture identidade vinculada',valor_centavos:'1'}})).error,null);
++  const criar=await a.rpc('executar',{p_acao:'criar_obra',p_dados:{cliente:'Fixture HTTP concorrente',valor_centavos:'10000'},p_operacao:randomUUID()});
++  assert.equal(criar.error,null);
++  const id=randomUUID(),dados={p_acao:'registrar_movimento',p_dados:{obra_id:criar.data.id,tipo:'entrada',descricao:'Recebimento sintético',valor_centavos:'10000'},p_operacao:id};
++  const r=await Promise.all([a.rpc('executar',dados),a.rpc('executar',dados)]);
++  assert.equal(r[0].error,null);assert.equal(r[1].error,null);assert.equal(r[0].data.id,r[1].data.id);
++  const pedido=await a.rpc('executar',{p_acao:'solicitar_exclusao',p_dados:{movimento_id:r[0].data.id,motivo:'Duplicado fixture'},p_operacao:randomUUID()});
++  assert.equal(pedido.error,null);
++  const decisao={p_acao:'decidir_exclusao',p_dados:{solicitacao_id:pedido.data.id,decisao:'aprovada',motivo:'Conferido fixture'},p_operacao:randomUUID()};
++  assert.equal((await a.rpc('executar',decisao)).error?.code,'42501');
++  assert.equal((await b.rpc('executar',decisao)).error,null);
++  const s=await b.rpc('ler_estado');assert.equal(s.error,null);
++  assert.equal(s.data.movimentos.filter(m=>m.estorna_id===r[0].data.id).length,1);
++  assert.equal(s.data.resumos.find(o=>o.obra_id===criar.data.id).saldo_centavos,'0');
++});
+--- revisado-zyra/scripts/aplicar-importacao-local.mjs
++++ corretiva/scripts/aplicar-importacao-local.mjs
+@@ -0,0 +1,43 @@
++// Administrative LOCAL-ONLY runner; never bundled into the browser.
++import { readFile } from 'node:fs/promises';
++import { createHash } from 'node:crypto';
++import { pathToFileURL } from 'node:url';
++import pg from 'pg';
++import { planejarImportacao } from '../js/importacao.js';
++export function validarPlano(bytes,plano) {
++  const hash=createHash('sha256').update(bytes).digest('hex');
++  if(hash!==plano.sha256)throw new Error('SHA-256 do backup diverge do plano aprovado.');
++  const refeito=planejarImportacao(JSON.parse(bytes.toString('utf8')),plano.origem_id);
++  const {sha256,...conteudo}=plano;
++  if(JSON.stringify(refeito)!==JSON.stringify(conteudo))throw new Error('Plano difere da conversão reproduzida.');
++  if(refeito.quarentena.length || !refeito.validas.length)throw new Error('Resolva a quarentena ou o lote vazio antes da execução.');
++  return refeito;
++}
++export async function aplicarPlano(client,bytes,plano) {
++  const refeito=validarPlano(bytes,plano);
++  await client.query('begin');
++  try {
++    // One exclusive maintenance lock for the ENTIRE batch; application writes
++    // acquire the shared lock and cannot interleave with this batch.
++    await client.query('select pg_advisory_xact_lock(194762914)');
++    const identidade=(await client.query('select private.identidade_importacao() as i')).rows[0].i;
++    for(const obra of refeito.validas)await client.query('select private.importar_obra($1,$2,$3,$4,$5)',[
++      obra.origem_id,obra.chave,plano.sha256,JSON.stringify(obra.convertido),JSON.stringify(obra.bruto)]);
++    const t=refeito.totais;
++    const esperado={obras_validas:t.obras_validas,movimentos:t.movimentos,eventos:t.eventos,
++      entradas_centavos:t.entradas_centavos,custos_centavos:t.custos_centavos,saldo_centavos:t.saldo_centavos};
++    const totais=(await client.query('select private.conferir_importacao($1,$2) as t',[plano.sha256,JSON.stringify(esperado)])).rows[0].t;
++    await client.query('commit');return {identidade,sha256:plano.sha256,totais};
++  }catch(error){await client.query('rollback');throw error;}
++}
++if(process.argv[1] && import.meta.url===pathToFileURL(process.argv[1]).href) {
++  const [backup,arquivoPlano,confirmacao]=process.argv.slice(2);
++  if(!backup || !arquivoPlano || confirmacao!=='--confirmar-local')throw new Error('Uso: node scripts/aplicar-importacao-local.mjs backup.json plano.json --confirmar-local');
++  const url=new URL(process.env.LOCAL_IMPORT_PG_URL || '');
++  if(!['127.0.0.1','localhost','[::1]'].includes(url.hostname))throw new Error('Esta etapa permite somente PostgreSQL local isolado.');
++  const client=new pg.Client({connectionString:url.href});await client.connect();
++  try{
++    const resultado=await aplicarPlano(client,await readFile(backup),JSON.parse(await readFile(arquivoPlano,'utf8')));
++    console.log(JSON.stringify(resultado));
++  }finally{await client.end();}
++}
+--- revisado-zyra/scripts/local-postgres.mjs
++++ corretiva/scripts/local-postgres.mjs
+@@ -0,0 +1,39 @@
++import EmbeddedPostgres from 'embedded-postgres';
++import { randomUUID, randomBytes } from 'node:crypto';
++import { mkdir, appendFile } from 'node:fs/promises';
++import { resolve } from 'node:path';
++import { createServer } from 'node:net';
++import { spawn } from 'node:child_process';
++import { once } from 'node:events';
++export async function portaLivre() {
++  return new Promise((ok,fail)=>{
++    const s=createServer();s.on('error',fail);s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>ok(p));});
++  });
++}
++export async function iniciarPostgres() {
++  const root=resolve('.local',`pg-corrective-${randomUUID()}`);await mkdir(root,{recursive:true});
++  const port=await portaLivre(),password=randomBytes(24).toString('base64url');
++  const log=msg=>{void appendFile(resolve(root,'postgres.log'),String(msg)+'\n');};
++  const cluster=new EmbeddedPostgres({databaseDir:resolve(root,'data'),user:'postgres',password,port,
++    authMethod:'scram-sha-256',persistent:true,createPostgresUser:false,
++    initdbFlags:['--encoding=UTF8','--locale=C'],onLog:log,onError:log});
++  await cluster.initialise();
++  // Explicit native lifecycle avoids the library's Windows taskkill process.
++  const bins=await import(`@embedded-postgres/${process.platform==='win32'?'windows':process.platform}-${process.arch}`);
++  const child=spawn(bins.postgres,['-D',resolve(root,'data'),'-p',String(port),'-h','127.0.0.1'],{windowsHide:true,stdio:['ignore','pipe','pipe']});
++  const saida=once(child,'exit');
++  await new Promise((ok,fail)=>{
++    child.once('error',fail);child.once('exit',()=>fail(new Error('PostgreSQL encerrou antes de iniciar.')));
++    child.stderr.on('data',b=>{const s=String(b);log(s);if(s.includes('ready to accept connections'))ok();});
++    child.stdout.on('data',log);
++  });
++  return {root,url:`postgresql://postgres:${password}@127.0.0.1:${port}/postgres`,
++    async stop(){
++      if(child.exitCode!==null)return;
++      await new Promise((ok,fail)=>{
++        const ctl=spawn(bins.pg_ctl,['stop','-D',resolve(root,'data'),'-m','fast','-w'],{windowsHide:true,stdio:'ignore'});
++        ctl.once('error',fail);ctl.once('exit',code=>code===0?ok():fail(new Error('Falha ao parar instância local.')));
++      });
++      await saida;
++    }};
++}
+--- revisado-zyra/scripts/test-native.mjs
++++ corretiva/scripts/test-native.mjs
+@@ -0,0 +1,16 @@
++// Disposable PostgreSQL; no service, OS user or remote endpoint.
++import { iniciarPostgres } from './local-postgres.mjs';
++import { spawn } from 'node:child_process';
++import pg from 'pg';
++const cluster=await iniciarPostgres();
++try {
++ const c=new pg.Client({connectionString:cluster.url});await c.connect();
++ console.log('PostgreSQL nativo: '+(await c.query('select version() as v')).rows[0].v);await c.end();
++ const url=cluster.url;
++  const code=await new Promise((ok,fail)=>{
++    const child=spawn(process.execPath,['--test','--test-reporter=spec','tests/native/concurrency.test.mjs'],{
++      env:{...process.env,LOCAL_PG_URL:url},stdio:'inherit',windowsHide:true});
++    child.on('error',fail);child.on('exit',ok);
++  });
++  process.exitCode=code ?? 1;
++} finally {await cluster.stop();}
+--- revisado-zyra/scripts/test-auth-local.mjs
++++ corretiva/scripts/test-auth-local.mjs
+@@ -0,0 +1,106 @@
++// Minimal isolated native Auth + PostgREST stack. No Docker, SMTP, remote
++// resource, real account, browser configuration or persistent service.
++import { iniciarPostgres, portaLivre } from './local-postgres.mjs';
++import { readFile, appendFile, access } from 'node:fs/promises';
++import { resolve } from 'node:path';
++import { spawn } from 'node:child_process';
++import { once } from 'node:events';
++import { createServer } from 'node:http';
++import { randomBytes, randomUUID, createHmac } from 'node:crypto';
++import pg from 'pg';
++import { migration } from '../tests/harness.mjs';
++const authBin=resolve('.local/tools/gotrue.exe'),restBin=resolve('.local/tools/postgrest14/postgrest.exe');
++await access(authBin);await access(restBin);
++const cluster=await iniciarPostgres();const filhos=[];let proxy,db;
++const log=texto=>{void appendFile(resolve(cluster.root,'auth-rest.log'),String(texto)+'\n');};
++const localEnv={SystemRoot:process.env.SystemRoot,
++  PATH:resolve('node_modules/@embedded-postgres/windows-x64/native/bin')+';'+process.env.PATH,
++  TEMP:process.env.TEMP,TMP:process.env.TMP,USERPROFILE:process.env.USERPROFILE,
++  APPDATA:process.env.APPDATA,LOCALAPPDATA:process.env.LOCALAPPDATA,
++  HOMEDRIVE:process.env.HOMEDRIVE,HOMEPATH:process.env.HOMEPATH};
++function iniciar(bin,env) {
++  const p=spawn(bin,[],{cwd:cluster.root,env:{...localEnv,...env},stdio:['ignore','pipe','pipe'],windowsHide:true});
++  p.stdout.on('data',log);p.stderr.on('data',log);p.on('error',log);filhos.push(p);return p;
++}
++async function esperar(url,child) {
++  const limite=Date.now()+90000;
++  while(Date.now()<limite) {
++    if(child.exitCode!==null)throw new Error('Serviço local encerrou, código '+child.exitCode+'; consulte os logs privados em .local.');
++    try{if((await fetch(url)).status<500)return;}catch{}
++    await new Promise(r=>setTimeout(r,250));
++  }
++  throw new Error('Serviço local não ficou disponível em 90 segundos.');
++}
++try {
++  const authPort=await portaLivre(),restPort=await portaLivre(),proxyPort=await portaLivre();
++  const segredo=randomBytes(48).toString('base64url'),senhaDb=randomBytes(24).toString('base64url');
++  db=new pg.Client({connectionString:cluster.url});await db.connect();
++  await db.query(`create role anon;create role authenticated;create role service_role;
++    create role authenticator login noinherit password ${db.escapeLiteral(senhaDb)};
++    grant anon,authenticated to authenticator;create schema auth;
++    create function auth.uid() returns uuid language sql stable as $$
++      select coalesce(nullif(current_setting('request.jwt.claim.sub',true),''),
++        nullif(current_setting('request.jwt.claims',true),'')::jsonb->>'sub')::uuid $$;
++    grant usage on schema auth to anon,authenticated;grant execute on function auth.uid() to anon,authenticated;`);
++  const api=`http://127.0.0.1:${proxyPort}`;
++  const authDb=new URL(cluster.url);authDb.searchParams.set('search_path','auth');
++  const auth=iniciar(authBin,{
++    GOTRUE_JWT_SECRET:segredo,GOTRUE_JWT_EXP:'3600',GOTRUE_JWT_AUD:'authenticated',
++    GOTRUE_JWT_DEFAULT_GROUP_NAME:'authenticated',GOTRUE_JWT_ADMIN_ROLES:'service_role',
++    GOTRUE_DB_DRIVER:'postgres',DB_NAMESPACE:'auth',DATABASE_URL:authDb.href,
++    API_EXTERNAL_URL:api+'/auth/v1',GOTRUE_API_HOST:'127.0.0.1',PORT:String(authPort),
++    GOTRUE_DISABLE_SIGNUP:'true',GOTRUE_SITE_URL:api,GOTRUE_MAILER_AUTOCONFIRM:'true',
++    GOTRUE_EXTERNAL_EMAIL_ENABLED:'true',GOTRUE_EXTERNAL_PHONE_ENABLED:'false',LOG_LEVEL:'error'
++  });
++  await esperar(`http://127.0.0.1:${authPort}/health`,auth);
++  const assinar=claims=>{
++    const h=Buffer.from(JSON.stringify({alg:'HS256',typ:'JWT'})).toString('base64url');
++    const p=Buffer.from(JSON.stringify(claims)).toString('base64url');
++    return `${h}.${p}.${createHmac('sha256',segredo).update(h+'.'+p).digest('base64url')}`;
++  };
++  const exp=Math.floor(Date.now()/1000)+3600;
++  const adminJwt=assinar({role:'service_role',iss:'supabase',exp});
++  const anonJwt=assinar({role:'anon',iss:'supabase',exp});
++  const env={LOCAL_SUPABASE_URL:api,LOCAL_SUPABASE_PUBLIC_KEY:anonJwt,
++    LOCAL_AUTH_PG_URL:cluster.url,LOCAL_AUTH_JWT_SECRET:segredo};
++  const ids=[];
++  for(const letra of ['A','B','C']) {
++    const email=`qa_${letra.toLowerCase()}_${randomUUID()}@fixture.test`,password=randomBytes(24).toString('base64url');
++    const r=await fetch(`http://127.0.0.1:${authPort}/admin/users`,{method:'POST',
++      headers:{Authorization:'Bearer '+adminJwt,'Content-Type':'application/json'},
++      body:JSON.stringify({email,password,email_confirm:true})});
++    if(!r.ok)throw new Error('Falha ao criar fixture Auth LOCAL: HTTP '+r.status);
++    const u=await r.json();ids.push(u.id || u.user?.id);
++    env[`LOCAL_QA_${letra}_EMAIL`]=email;env[`LOCAL_QA_${letra}_PASSWORD`]=password;
++  }
++  await db.query(await migration());
++  for(let i=0;i<ids.length;i++)await db.query('insert into public.profiles(id,nome) values($1,$2)',[ids[i],['Gustavo','Ivan','Terceiro'][i]]);
++  await db.query("insert into public.app_membros(usuario_id,lugar) values($1,'gustavo'),($2,'ivan')",[ids[0],ids[1]]);
++  const restUrl=new URL(cluster.url);restUrl.username='authenticator';restUrl.password=senhaDb;
++  const rest=iniciar(restBin,{PGRST_DB_URI:restUrl.href,PGRST_DB_SCHEMAS:'public',PGRST_DB_ANON_ROLE:'anon',
++    PGRST_JWT_SECRET:segredo,PGRST_SERVER_HOST:'127.0.0.1',PGRST_SERVER_PORT:String(restPort)});
++  await esperar(`http://127.0.0.1:${restPort}/`,rest);
++  proxy=createServer(async(req,res)=>{
++    try{
++      const prefix=req.url.startsWith('/auth/v1')?'/auth/v1':req.url.startsWith('/rest/v1')?'/rest/v1':null;
++      if(!prefix){res.writeHead(404);res.end();return;}
++      const chunks=[];for await(const b of req)chunks.push(b);
++      const headers={...req.headers};delete headers.host;delete headers['content-length'];
++      const r=await fetch(`http://127.0.0.1:${prefix==='/auth/v1'?authPort:restPort}`+(req.url.slice(prefix.length)||'/'),{
++        method:req.method,headers,body:['GET','HEAD'].includes(req.method)?undefined:Buffer.concat(chunks)});
++      res.writeHead(r.status,Object.fromEntries([...r.headers].filter(([k])=>!['content-encoding','content-length','transfer-encoding'].includes(k))));
++      res.end(Buffer.from(await r.arrayBuffer()));
++    }catch{res.writeHead(502);res.end();}
++  });
++  await new Promise(r=>proxy.listen(proxyPort,'127.0.0.1',r));
++  console.log('Stack exclusivamente local: Auth 2.197.0 (socket Windows adaptado) + PostgREST 14.1 + PostgreSQL 17.11; três fixtures .test.');
++  const code=await new Promise((ok,fail)=>{
++    const c=spawn(process.execPath,['--test','--test-reporter=spec','tests/native/auth-api.test.mjs'],{
++      env:{...process.env,...env},stdio:'inherit',windowsHide:true});c.once('error',fail);c.once('exit',ok);
++  });
++  process.exitCode=code??1;
++}finally{
++  if(proxy)await new Promise(r=>proxy.close(r));
++  for(const p of filhos.reverse())if(p.exitCode===null){const fim=once(p,'exit');p.kill();await fim;}
++  await db?.end();await cluster.stop();
++}
+--- revisado-zyra/scripts/preparar-auth-local.ps1
++++ corretiva/scripts/preparar-auth-local.ps1
+@@ -0,0 +1,38 @@
++# Windows-only portable TEST tooling. No installer, OS service or remote project.
++$ErrorActionPreference = 'Stop'
++$ProgressPreference = 'SilentlyContinue'
++$projectRoot = Split-Path -Parent $PSScriptRoot
++$toolsRoot = Join-Path $projectRoot '.local/tools'
++New-Item -ItemType Directory -Force $toolsRoot | Out-Null
++function Get-VerifiedArchive($Url, $Name, $Expected) {
++    $archivePath = Join-Path $toolsRoot $Name
++    if (-not (Test-Path -LiteralPath $archivePath)) { Invoke-WebRequest $Url -OutFile $archivePath }
++    if ((Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Expected) { throw "Checksum divergente: $Name" }
++    return $archivePath
++}
++$goArchive = Get-VerifiedArchive 'https://go.dev/dl/go1.27.4.windows-amd64.zip' 'go.zip' '178ab98950ac69ab25069307dc6ade79f3816e414cce95b4da166a115cde1e7e'
++$authArchive = Get-VerifiedArchive 'https://github.com/supabase/auth/archive/refs/tags/v2.197.0.zip' 'auth-source.zip' '359a3235b3280e8c8c175559450a07b72249504edc55b266ab9be1776470526b'
++$restArchive = Get-VerifiedArchive 'https://github.com/PostgREST/postgrest/releases/download/v14.1/postgrest-v14.1-windows-x86-64.zip' 'postgrest14.zip' '7d34ac6d2c9ba8cb5cb7d169454e24f29be002de913bc12683b1c64f5c789d05'
++if (-not (Test-Path (Join-Path $toolsRoot 'go-toolchain/go/bin/go.exe'))) { Expand-Archive -LiteralPath $goArchive -DestinationPath (Join-Path $toolsRoot 'go-toolchain') }
++if (-not (Test-Path (Join-Path $toolsRoot 'auth-source/auth-2.197.0'))) { Expand-Archive -LiteralPath $authArchive -DestinationPath (Join-Path $toolsRoot 'auth-source') }
++if (-not (Test-Path (Join-Path $toolsRoot 'postgrest14/postgrest.exe'))) { Expand-Archive -LiteralPath $restArchive -DestinationPath (Join-Path $toolsRoot 'postgrest14') }
++$authRoot = Join-Path $toolsRoot 'auth-source/auth-2.197.0'
++$sourcePath = Join-Path $authRoot 'cmd/serve_cmd.go'
++$sourceText = [IO.File]::ReadAllText($sourcePath)
++if ($sourceText.Contains('unix.SetsockoptInt')) {
++    $beginOffset = $sourceText.IndexOf("`tlc := net.ListenConfig{")
++    $endOffset = $sourceText.IndexOf("`tlistener, err := lc.Listen", $beginOffset)
++    if ($beginOffset -lt 0 -or $endOffset -lt 0) { throw 'Código de socket diferente do esperado' }
++    $sourceText = $sourceText.Substring(0,$beginOffset) + "`t// Local Windows test shim: no Unix SO_REUSEPORT. Authentication is unchanged.`n`tlc := net.ListenConfig{}`n" + $sourceText.Substring($endOffset)
++    $sourceText = $sourceText.Replace("`t`"syscall`"`n",'').Replace("`t`"golang.org/x/sys/unix`"`n",'')
++    [IO.File]::WriteAllText($sourcePath,$sourceText,[Text.UTF8Encoding]::new($false))
++} elseif (-not $sourceText.Contains('Local Windows test shim')) { throw 'Fonte local inesperada' }
++$env:GOCACHE = Join-Path $projectRoot '.local/go-cache'
++$env:GOMODCACHE = Join-Path $projectRoot '.local/go-modules'
++$env:CGO_ENABLED = '0'
++Push-Location $authRoot
++try {
++    & (Join-Path $toolsRoot 'go-toolchain/go/bin/go.exe') build -buildvcs=false -o (Join-Path $toolsRoot 'gotrue.exe') .
++    if ($LASTEXITCODE -ne 0) { throw 'Compilação GoTrue falhou' }
++} finally { Pop-Location }
++Write-Output 'Ferramentas de teste locais preparadas. GoTrue possui somente adaptação de socket para Windows.'
+--- revisado-zyra/scripts/build-corrective.mjs
++++ corretiva/scripts/build-corrective.mjs
+@@ -0,0 +1,7 @@
++import { readFile, readdir, writeFile } from 'node:fs/promises';
++const dir=new URL('../supabase/migrations/',import.meta.url);
++const files=(await readdir(dir)).filter(f=>f.endsWith('_corrective_review.sql'));
++if(files.length!==1)throw new Error('Gere a migração corrective_review com a CLI.');
++const body=await readFile(new URL('../database/corrective.sql',import.meta.url),'utf8');
++await writeFile(new URL(files[0],dir),`-- Generated from database/corrective.sql.\nbegin;\ndo $migration$\ndeclare ddl text := $corrective_body$${body}$corrective_body$; existing text;\nbegin\n perform pg_advisory_xact_lock(194762913);\n select checksum into existing from private.schema_versions where version='corrective_review_v2';\n if found then\n  if existing<>md5(ddl) then raise exception 'Migration checksum mismatch'; end if;\n  return;\n end if;\n execute ddl;\n insert into private.schema_versions values('corrective_review_v2',md5(ddl));\nend $migration$;\ncommit;\n`);
++console.log('Migração corretiva gerada: '+files[0]);
+--- revisado-zyra/package.json
++++ corretiva/package.json
+@@ -6,7 +6,9 @@
+     "test": "node --test tests/*.test.mjs",
+     "test:postgres": "node --test tests/native/*.test.mjs",
+     "build:vendor": "node scripts/vendor.mjs",
+-    "build": "node scripts/build-migration.mjs && node scripts/vendor.mjs && node scripts/build-pwa.mjs",
++    "build": "node scripts/build-migration.mjs && node scripts/build-corrective.mjs && node scripts/vendor.mjs && node scripts/build-pwa.mjs",
++    "test:native:isolated": "node scripts/test-native.mjs",
++    "test:auth:isolated": "node scripts/test-auth-local.mjs",
+     "serve": "node scripts/serve.mjs"
+   },
+   "dependencies": {
+@@ -15,6 +17,7 @@
+   },
+   "devDependencies": {
+     "@electric-sql/pglite": "0.5.16",
++    "embedded-postgres": "17.11.0-beta.19",
+     "esbuild": "0.27.0",
+     "jsdom": "26.1.0",
+     "pg": "8.23.1",
+--- revisado-zyra/package-lock.json
++++ corretiva/package-lock.json
+@@ -11,6 +11,7 @@
+       },
+       "devDependencies": {
+         "@electric-sql/pglite": "0.5.16",
++        "embedded-postgres": "17.11.0-beta.19",
+         "esbuild": "0.27.0",
+         "jsdom": "26.1.0",
+         "pg": "8.23.1",
+@@ -168,6 +169,150 @@
+       "dev": true,
+       "license": "Apache-2.0"
+     },
++    "node_modules/@embedded-postgres/darwin-arm64": {
++      "version": "17.11.0-beta.19",
++      "resolved": "https://registry.npmjs.org/@embedded-postgres/darwin-arm64/-/darwin-arm64-17.11.0-beta.19.tgz",
++      "integrity": "sha512-t7SxepOERtwqrkt0lfqLWjeDdYoOvjYRuVFVke7vYJ7XSxMq1sRLRekG6zvcN/zm46XouzXkmrd/E5/RPhlAvw==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "hasInstallScript": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": ">=16"
++      }
++    },
++    "node_modules/@embedded-postgres/darwin-x64": {
++      "version": "17.11.0-beta.19",
++      "resolved": "https://registry.npmjs.org/@embedded-postgres/darwin-x64/-/darwin-x64-17.11.0-beta.19.tgz",
++      "integrity": "sha512-4p3AnzAizgUGsDt+/mCL5YmfkUubBFvWhbVjZQmjDhnE3UrxFSd6wfKQkhlv4VKMRpfNyLiTrtXWNGi76t5M3Q==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "hasInstallScript": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": ">=16"
++      }
++    },
++    "node_modules/@embedded-postgres/linux-arm": {
++      "version": "17.11.0-beta.19",
++      "resolved": "https://registry.npmjs.org/@embedded-postgres/linux-arm/-/linux-arm-17.11.0-beta.19.tgz",
++      "integrity": "sha512-Fe5GXAQ+nPBYQEVUQIzBKG3zTnetWj+tLvMPSYlam3dy+a4A5FlsN7JARnHFhNN6wcQRgbssfQUsXCc2l7mIQQ==",
++      "cpu": [
++        "arm"
++      ],
++      "dev": true,
++      "hasInstallScript": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=16"
++      }
++    },
++    "node_modules/@embedded-postgres/linux-arm64": {
++      "version": "17.11.0-beta.19",
++      "resolved": "https://registry.npmjs.org/@embedded-postgres/linux-arm64/-/linux-arm64-17.11.0-beta.19.tgz",
++      "integrity": "sha512-Rl7wWkWFa8TYT9ZdMSGETq0EiE8Y4djD7oAVbaUHl/KWXpQm8rPLGgGYTYyqfHG3dg0uKhBIlN/Cs3wvP7dqew==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "hasInstallScript": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=16"
++      }
++    },
++    "node_modules/@embedded-postgres/linux-ia32": {
++      "version": "17.11.0-beta.19",
++      "resolved": "https://registry.npmjs.org/@embedded-postgres/linux-ia32/-/linux-ia32-17.11.0-beta.19.tgz",
++      "integrity": "sha512-6pfA/iHpNbNhP2uTpIG5HeCnuU6S0Uru3prGkHNbl903IBma/V/dAubYJAVyRb3RUi9ZecBZrtAoYOn1KGEBJA==",
++      "cpu": [
++        "ia32"
++      ],
++      "dev": true,
++      "hasInstallScript": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=16"
++      }
++    },
++    "node_modules/@embedded-postgres/linux-ppc64": {
++      "version": "17.11.0-beta.19",
++      "resolved": "https://registry.npmjs.org/@embedded-postgres/linux-ppc64/-/linux-ppc64-17.11.0-beta.19.tgz",
++      "integrity": "sha512-PC20tUFD/tuJRRhpX+X3TqHsbvwCAurvuZr+Tg3Lx58tFW+O264jdmdS3uQSdYzWsXRXHmgxn26bo3tsMVxaVQ==",
++      "cpu": [
++        "ppc64"
++      ],
++      "dev": true,
++      "hasInstallScript": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=16"
++      }
++    },
++    "node_modules/@embedded-postgres/linux-x64": {
++      "version": "17.11.0-beta.19",
++      "resolved": "https://registry.npmjs.org/@embedded-postgres/linux-x64/-/linux-x64-17.11.0-beta.19.tgz",
++      "integrity": "sha512-Mg2SUiVf0TW9vECO8qfv41730WgJOKguOaK4acUuIB4L8HeVuiYgQzlIj2kh73Q3OLxRdeub7D8C/SkExMlqrg==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "hasInstallScript": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=16"
++      }
++    },
++    "node_modules/@embedded-postgres/windows-x64": {
++      "version": "17.11.0-beta.19",
++      "resolved": "https://registry.npmjs.org/@embedded-postgres/windows-x64/-/windows-x64-17.11.0-beta.19.tgz",
++      "integrity": "sha512-z1/SIyBulCYPWYsLWDkgniAYqSd2KBc48zwPOPpyu2YGYIoQ5kRCU6bEJ2q/lcsBuseAdWAn1lBg7KiI/pIg4Q==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "hasInstallScript": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": ">=16"
++      }
++    },
+     "node_modules/@esbuild/aix-ppc64": {
+       "version": "0.27.0",
+       "resolved": "https://registry.npmjs.org/@esbuild/aix-ppc64/-/aix-ppc64-0.27.0.tgz",
+@@ -953,6 +1098,30 @@
+         "bun": ">=1",
+         "deno": ">=2.7.10",
+         "node": ">=16"
++      }
++    },
++    "node_modules/embedded-postgres": {
++      "version": "17.11.0-beta.19",
++      "resolved": "https://registry.npmjs.org/embedded-postgres/-/embedded-postgres-17.11.0-beta.19.tgz",
++      "integrity": "sha512-7weAEptF45qGnDg9DjjFrFGB/TYgS8SwSq2ipO69Q0lupdA1VNcwQd6siHALIOgw6vYu65/MqMd8lSMeYXqvSg==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "exit-hook": "^5.1.0",
++        "pg": "^8.23.1"
++      },
++      "engines": {
++        "node": ">=16"
++      },
++      "optionalDependencies": {
++        "@embedded-postgres/darwin-arm64": "^17.11.0-beta.19",
++        "@embedded-postgres/darwin-x64": "^17.11.0-beta.19",
++        "@embedded-postgres/linux-arm": "^17.11.0-beta.19",
++        "@embedded-postgres/linux-arm64": "^17.11.0-beta.19",
++        "@embedded-postgres/linux-ia32": "^17.11.0-beta.19",
++        "@embedded-postgres/linux-ppc64": "^17.11.0-beta.19",
++        "@embedded-postgres/linux-x64": "^17.11.0-beta.19",
++        "@embedded-postgres/windows-x64": "^17.11.0-beta.19"
+       }
+     },
+     "node_modules/entities": {
+@@ -1010,6 +1179,19 @@
+         "@esbuild/win32-x64": "0.27.0"
+       }
+     },
++    "node_modules/exit-hook": {
++      "version": "5.1.0",
++      "resolved": "https://registry.npmjs.org/exit-hook/-/exit-hook-5.1.0.tgz",
++      "integrity": "sha512-INjr2xyxHo7bhAqf5ong++GZPPnpcuBcaXUKt03yf7Fie9yWD7FapL4teOU0+awQazGs5ucBh7xWs/AD+6nhog==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=20"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/sindresorhus"
++      }
++    },
+     "node_modules/html-encoding-sniffer": {
+       "version": "4.0.0",
+       "resolved": "https://registry.npmjs.org/html-encoding-sniffer/-/html-encoding-sniffer-4.0.0.tgz",
+--- revisado-zyra/README.md
++++ corretiva/README.md
+@@ -3,6 +3,11 @@
+ PWA de obras com financeiro compartilhado entre Gustavo e Ivan.
+ O código desta branch ainda não foi publicado. Não execute migrações remotas
+ ou importações reais sem autorização específica.
++
++Rodada corretiva: [procedimento administrativo](docs/modernizacao/IMPORTACAO-ADMINISTRATIVA.md)
++e [relatório corretivo](docs/modernizacao/RODADA-CORRETIVA.md). A segunda migração
++preserva o SQL v1 já revisado. A recuperação de tentativas usa somente UUID/tipo
++da ação no armazenamento do navegador; valores e payloads ficam no servidor.
+ 
+ ## Executar a verificação local
+ 
+@@ -29,7 +34,10 @@
+ 
+ A migração gerada está em
+ `supabase/migrations/20261115194547_collaborative_ledger.sql`.
+-Fontes: `database/schema.sql`, `operations.sql`, `import.sql`, `access.sql`.
++Fontes v1: `database/schema.sql`, `operations.sql`, `import.sql`, `access.sql`.
++Correções adicionais: `database/corrective.sql`, gerando
++`supabase/migrations/20261116003827_corrective_review.sql` por
++`node scripts/build-corrective.mjs`. Aplicar as migrações em ordem.
+ `node scripts/build-migration.mjs` regenera a cópia enquanto esta versão ainda
+ não foi aplicada a ambiente persistente. Depois disso, alterações exigem NOVA
+ migração criada pela CLI; não editar o conteúdo de uma versão aplicada.
+@@ -61,8 +69,11 @@
+ 
+ ## Concorrência nativa
+ 
+-Não foi encontrado servidor PostgreSQL nativo disponível. A suíte adicional
+-fica pendente e só roda com `LOCAL_PG_URL` apontando para loopback:
++O wrapper PostgreSQL nativo instalado permite rodar uma instância isolada,
++sem instalar serviços: `npm run test:native:isolated`. O banco é encerrado
++ao terminar; arquivos sintéticos/logs ficam em .local/ para inspeção.
++A suíte também aceita uma instância local descartável já disponível por
++`LOCAL_PG_URL` apontando para loopback:
+ 
+ ```powershell
+ $env:LOCAL_PG_URL = 'postgresql://USUARIO:SENHA@127.0.0.1:5432/postgres'
+@@ -120,4 +131,18 @@
+ Jamais inserir service_role, sb_secret ou senha em config.js. Recuperação de
+ senha/SMTP e o teste do Auth real dependem do futuro ambiente autorizado.
+ 
+-Resultados e limites: [IMPLEMENTACAO-LOCAL.md](docs/modernizacao/IMPLEMENTACAO-LOCAL.md).
++Para a stack nativa de Auth/PostgREST no Windows, preparar as ferramentas
++portáteis com `./scripts/preparar-auth-local.ps1` e executar
++`npm run test:auth:isolated`. O script fixa versões/checksums e documenta a
++adaptação de socket do GoTrue para Windows. Cria apenas fixtures locais `.test`.
++Não configura o navegador, SMTP ou projetos remotos.
++
++A UI usa `executar_com_identidade` e `recuperar_operacao` para impedir que uma
++troca de conta atribua uma tentativa pendente ao operador errado. O registro
++local contém apenas `{versao,id,acao}`; não contém valores ou payloads financeiros.
++São necessários armazenamento local e Web Locks. Na indisponibilidade deles,
++a gravação falha antes do envio. Em resultado incerto, Atualizar dados permite
++consultar ou encerrar a tentativa; o encerramento no servidor bloqueia envio tardio.
++
++Resultados atuais: [RODADA-CORRETIVA.md](docs/modernizacao/RODADA-CORRETIVA.md).
++Histórico da primeira implementação: [IMPLEMENTACAO-LOCAL.md](docs/modernizacao/IMPLEMENTACAO-LOCAL.md).
+--- revisado-zyra/docs/modernizacao/IMPORTACAO-ADMINISTRATIVA.md
++++ corretiva/docs/modernizacao/IMPORTACAO-ADMINISTRATIVA.md
+@@ -0,0 +1,87 @@
++# Procedimento administrativo — rodada corretiva
++
++Esta etapa foi executada apenas com fixtures sintéticas em PostgreSQL local
++descartável. Dados reais, contas reais e qualquer execução remota continuam
++proibidos sem autorização específica. Os SQL abaixo são modelos operacionais,
++não comandos já aplicados a ambientes reais.
++
++## Identidade e privilégio
++
++O navegador usa somente Auth individual e chave pública. Não recebe credencial
++PostgreSQL, service_role, grant de importação, DML direto ou acesso à allowlist.
++
++A importação exige login PostgreSQL dedicado, temporário e NOINHERIT. Um DBA
++associa esse `session_user` a um ator individual já autorizado em profiles e
++app_membros, com prazo de validade na tabela privada importacao_operadores.
++`SET ROLE`, `auth.uid()` e claims enviadas pelo cliente não escolhem esse ator.
++As rotinas privadas definer revalidam o login original, prazo, atividade e
++vínculo em cada chamada. Não são RPCs públicas; private não deve ser exposto.
++
++Privilégios do login: CONNECT no banco alvo, USAGE em private e EXECUTE apenas
++em identidade_importacao, importar_obra e conferir_importacao. Sem papel
++authenticated, sem SUPERUSER/BYPASSRLS/CREATEROLE/CREATEDB e sem DML/SELECT nas
++tabelas de negócio/allowlist. Os testes nativos comprovam a execução por uma
++conexão real desse login, a atribuição correta mesmo com claim forjada e o
++bloqueio por expiração. Também testam um login de API distinto, com papel
++authenticated e claim válida, que não consegue assumir a identidade importadora.
++
++Exemplo para preparação futura por DBA, depois da autorização e com nomes,
++UUID e prazo reais revisados (não copiar literalmente):
++
++```sql
++create role criativa_import_temporario login noinherit nosuperuser nobypassrls
++  nocreatedb nocreaterole noreplication valid until 'DATA-HORA-APROVADA';
++-- Definir senha por mecanismo interativo seguro do DBA, como \password no psql.
++grant connect on database BANCO_EXCLUSIVO to criativa_import_temporario;
++grant usage on schema private to criativa_import_temporario;
++grant execute on function private.identidade_importacao(),
++  private.importar_obra(uuid,text,text,jsonb,jsonb),
++  private.conferir_importacao(text,jsonb) to criativa_import_temporario;
++insert into private.importacao_operadores(login_name,ator_id,valido_ate)
++values('criativa_import_temporario','UUID-DO-OPERADOR','DATA-HORA-APROVADA');
++```
++
++Não conceder esse papel ao authenticator, authenticated ou anon. Não conceder
++acesso por metadados Auth. `login_importador` registra o principal no lote;
++importado_por registra o ator; o relatório final registra quem conferiu e quando.
++Lotes anteriores à segunda migração mantêm principal nulo, sem inventar autoria.
++
++## Execução segura
++
++1. Congelar a fonte aprovada e preservar bytes/hash do backup fora do Git.
++   Identificar origem canônica e não juntar exportações divergentes por suposição.
++2. Gerar o plano offline com scripts/importar-legado.mjs. Revisar contagens,
++   centavos, caixa legado, pendências e quarentena. O aplicador recusa quarentena
++   ou lote vazio; não cria ajustes, assinaturas ou timestamps históricos fictícios.
++3. Disponibilizar janela de manutenção. A aplicação adquire lock compartilhado
++   de manutenção; o aplicador mantém o lock exclusivo durante todo o lote.
++   Gravações concorrentes aguardam; não intercalam com a importação.
++4. Usar conexão PostgreSQL dedicada por variável de ambiente privada
++   LOCAL_IMPORT_PG_URL; nunca parâmetro de página/config.js nem string de
++   conexão em arquivo versionado ou histórico com senha. O aplicador desta
++   etapa recusa qualquer host fora de loopback.
++5. Executar, somente na instância local isolada aprovada:
++
++```powershell
++node scripts/aplicar-importacao-local.mjs BACKUP.json PLANO.json --confirmar-local
++```
++
++6. O aplicador recalcula SHA-256 dos bytes, reproduz o conversor e compara o
++   plano integral antes de conectar qualquer identidade financeira ao banco.
++   Consulta identidade_importacao, importa e reconcilia na mesma transação.
++   Divergência ou erro em qualquer obra provoca rollback do lote inteiro.
++7. Se houver queda de conexão no commit, reconectar com a mesma identidade e
++   reaplicar o MESMO backup/plano/origem. Chaves e conteúdo no servidor impedem
++   duplicação. Não gerar outra origem para contornar conflito.
++8. Conferir relatório final: contagens, entradas, custos e saldo precisam bater
++   exatamente com o plano. Divergência do caixa escalar permanece registrada no
++   plano; não é corrigida com lançamento artificial.
++9. DBA encerra a janela: desativa/remove a allowlist, revoga os três EXECUTEs,
++   revoga USAGE, coloca o login em NOLOGIN e encerra conexões residuais, se
++   necessário. Verificar a revogação antes de descartar o login. Expiração da
++   allowlist também bloqueia conexões já abertas em chamadas posteriores.
++
++Backup, plano, logs e recibo ficam privados. A ferramenta não concede nem
++revoga privilégios, não cria contas e não seleciona atores por nome. Esse
++provisionamento é responsabilidade do DBA e exige autorização própria para
++ambiente real. Nenhuma dessas etapas reais foi executada nesta rodada.
+--- revisado-zyra/docs/modernizacao/RODADA-CORRETIVA.md
++++ corretiva/docs/modernizacao/RODADA-CORRETIVA.md
+@@ -0,0 +1,154 @@
++# Rodada corretiva — resultado
++
++15/11/2026, America/Sao_Paulo. Branch `codex/modernizacao-supabase`.
++Escopo: os cinco pontos da revisão estática de Zyra. Nenhum recurso remoto,
++dado real, conta real, commit, push ou publicação. Somente fixtures locais.
++
++**Resultado final: 54 testes aprovados, zero falhas e zero testes ignorados nas
++três execuções finais.** Os processos temporários foram encerrados.
++
++## Alterações e linhas
++
++Referência da comparação: ZIP enviado à Zyra, SHA-256
++`8817c9c09e48da4406f8389ae579eb2222d90789107058cdc9d28988a22de0b0`.
++Comparação byte a byte confirmou que os sete HTMLs, CSS e migração SQL v1
++permanecem iguais àquele pacote. Não houve alteração estética.
++
++| Arquivo e linhas atuais | Alteração |
++|---|---|
++| database/corrective.sql:3 | Índice único permanente de corrige_id |
++| database/corrective.sql:5 | Validação de correção da mesma natureza/obra e original já revertido |
++| database/corrective.sql:33 | Lock compartilhado de manutenção nas operações normais |
++| database/corrective.sql:121 | Principal PostgreSQL registrado nos lotes |
++| database/corrective.sql:122 | Allowlist privada e temporária para importação |
++| database/corrective.sql:131 | Identidade importadora obtida do session_user; prazo, vínculo e atividade obrigatórios |
++| database/corrective.sql:154 | Rotinas administrativas definer restritas; identidade para auditoria definida pelo servidor e claim anterior restaurada |
++| database/corrective.sql:246 | Consulta transacional de UUID e resultado, sem retornar payload financeiro |
++| database/corrective.sql:261 | Encerramento durável que impede requisição tardia |
++| database/corrective.sql:293 e :303 | Escrita/recuperação vinculadas à identidade esperada; troca de conta não troca o ator da tentativa |
++| supabase/migrations/20261116003827_corrective_review.sql:1 | Segunda migração completa, transacional e com checksum; v1 permanece intacta |
++| scripts/aplicar-importacao-local.mjs:7, :16 e :33 | Verificação do backup/plano, execução/reconciliação em uma transação e CLI restrita a loopback |
++| js/recuperacao.js:1–44 | Diário mínimo de tentativas, recuperação após reload e exclusão mútua entre abas por Web Locks |
++| js/app.js:12, :37–64, :207 e :251 | Integração com a recuperação, consulta/encerramento pelo botão existente e limpeza do formulário confirmado |
++| js/servicos.js:5–24 e :44–63 | Revalidação após refresh, invalidação de dados sem autorização, proteção de respostas após troca de conta e RPCs vinculadas ao ator |
++| sw.js:1 e lista SHELL | Novo hash de build e inclusão de recuperacao.js; sem mudança visual |
++| tests/harness.mjs:15–23 | Aplicação das duas migrações e fixture administrativa explícita |
++| tests/corrective.test.mjs:1–99 | Regressão v1, cadeia de correções, rede incerta, reload, tombstone, abas e storage bloqueado |
++| tests/auth.test.mjs:39–61 | Refresh, revogação e resposta de escrita após troca de usuário |
++| tests/ui.test.mjs:10–23 e :110–125 | Storage/locks de teste e reload com resposta perdida |
++| tests/native/concurrency.test.mjs:86–168 | Login administrativo real, mínimo privilégio, rollback do lote, expiração, correções/cancelamento concorrentes e janela de manutenção |
++| tests/native/auth-api.test.mjs:36–118 | Base compartilhada não vazia, private fora da API, refresh/expiração/revogação e operações HTTP concorrentes |
++| scripts/local-postgres.mjs:1–39; scripts/test-native.mjs:1–16 | PostgreSQL nativo descartável com ciclo de vida explícito e bind em loopback |
++| scripts/test-auth-local.mjs:1–106; scripts/preparar-auth-local.ps1:1–38 | Stack Auth/PostgREST local, ferramentas fixadas e fixtures `.test` |
++| scripts/build-corrective.mjs:1–7 | Geração da segunda migração preservando a primeira |
++| package.json:9–11 e :20; package-lock.json | Comandos locais e PostgreSQL nativo fixado em embedded-postgres 17.11.0-beta.19 |
++
++Índice completo dos intervalos: [LINHAS-CORRETIVA.json](LINHAS-CORRETIVA.json).
++Diff do código contra o pacote revisado: [RODADA-CORRETIVA.patch](RODADA-CORRETIVA.patch).
++README foi atualizado com os comandos e os limites desta rodada.
++
++## 1. Importação administrativa
++
++Procedimento completo: [IMPORTACAO-ADMINISTRATIVA.md](IMPORTACAO-ADMINISTRATIVA.md).
++Login PostgreSQL dedicado/temporário, NOINHERIT e sem DML, associado por DBA
++a um ator autorizado. Recebe somente USAGE e três EXECUTEs privados. A identidade
++vem do login original da conexão, não de JWT/SET ROLE. O navegador nunca recebe
++credencial administrativa nem acesso às rotinas de importação.
++
++O aplicador valida os bytes/hash, reproduz o plano e recusa alteração/quarentena.
++Importação e conferência do lote inteiro ocorrem na mesma transação, sob lock
++exclusivo de manutenção. Escritas normais aguardam. Uma divergência na segunda
++obra desfaz também a primeira: isso foi testado em conexão nativa real.
++Expiração e revogação são verificadas no servidor, inclusive em conexão aberta.
++
++O login original é registrado em login_importador e na conferência. Lotes
++anteriores mantêm esse campo nulo; não foi inventada identidade histórica.
++Nenhuma execução com dados reais foi feita; o aplicador atual recusa hosts remotos.
++
++## 2. Regra de correção proposta e implementada localmente
++
++**Uma única substituição direta por lançamento, para sempre.** Ela exige que o
++original já tenha sido estornado integralmente com aprovação do outro operador,
++pertence à mesma obra e mantém a natureza entrada/custo. Para corrigir novamente,
++solicita-se e aprova-se o estorno do substituto; o próximo lançamento aponta
++para esse substituto. Forma-se uma cadeia auditável, sem ramificações.
++
++Foi reproduzido que a v1 aceitava duas correções do mesmo original. A v2 impede
++isso por índice único, inclusive com duas conexões concorrentes. Se uma base v1
++já contiver duplicatas, a migração falha e preserva os registros; não apaga ou
++reescreve dinheiro para forçar o upgrade. A resolução desse caso exigirá revisão
++e autorização específicas. Não existe base remota implantada por este trabalho.
++
++## 3. Resultado de rede incerto
++
++Antes do envio, persiste-se apenas `{versao,id,acao}`, por ator. Não se guardam
++valor, descrição, obra, payload ou fingerprint financeiro. Web Locks serializa
++o acesso ao diário entre abas. Falha de storage/locks impede o envio.
++
++Após reload, consulta-se o servidor pelo mesmo UUID, aguardando eventual transação
++em andamento. Se já confirmou, atualiza-se a tela, limpam-se os campos e só então
++remove-se o recibo. Não há reenvio automático nem nova UUID para a mesma tentativa.
++Se ainda estiver ausente, o operador pode reintroduzir os dados conferidos usando
++a mesma ação/UUID ou encerrar a tentativa pelo botão Atualizar dados. O servidor
++grava um tombstone; uma requisição atrasada não poderá produzir efeito depois.
++
++O payload não é recuperável do navegador: em tentativa ainda não recebida,
++reintrodução dos dados é deliberada. A remoção manual do armazenamento perde o
++recibo; nesse caso é obrigatório conferir o extrato antes de lançar novamente.
++Não se promete proteção após o usuário apagar deliberadamente o identificador.
++
++Escrita, consulta e encerramento usados pela UI validam também o UUID de usuário
++esperado contra auth.uid(), impedindo atribuição errada durante troca de conta.
++
++## 4. Testes efetivamente executados
++
++| Execução final | Resultado | Evidência |
++|---|---|---|
++| node --test --test-reporter=spec tests/*.test.mjs | 39 aprovados, 0 falhas, 0 ignorados | [TESTES-CORRETIVA-LOCAL.txt](TESTES-CORRETIVA-LOCAL.txt) |
++| npm run test:native:isolated | 8 aprovados, 0 falhas, 0 ignorados | [TESTES-CORRETIVA-NATIVO.txt](TESTES-CORRETIVA-NATIVO.txt) |
++| npm run test:auth:isolated | 7 aprovados, 0 falhas, 0 ignorados | [TESTES-CORRETIVA-AUTH.txt](TESTES-CORRETIVA-AUTH.txt) |
++
++PostgreSQL nativo 17.11 em Windows, conexões independentes, porta aleatória em
++127.0.0.1, autenticação SCRAM e dados em diretório único .local/. Nenhum serviço
++do sistema ou usuário do Windows criado. O banco foi parado ao terminar.
++
++Auth real foi disponibilizado sem Docker: fonte GoTrue v2.197.0 compilada com
++Go portátil oficial 1.27.4; PostgREST oficial 14.1; proxy local apenas para os
++prefixos Auth/REST; três usuários sintéticos `.test` por execução. Sem SMTP,
++OAuth externo, configuração do navegador ou recurso remoto. Credenciais/chaves
++temporárias ficaram nos processos de teste; config.js continua vazio.
++
++**Limite do ambiente:** GoTrue v2.197.0 usa SO_REUSEPORT Unix. A cópia temporária
++recebeu somente adaptação para net.ListenConfig padrão no Windows, removendo
++essa opção; nenhuma lógica de autenticação foi modificada. Patch exato:
++[GOTRUE-WINDOWS-TEST.patch](GOTRUE-WINDOWS-TEST.patch).
++PostgREST 16.5 encerrou com código nativo 3 neste ambiente; adotou-se o binário
++oficial 14.1, que executou os testes. Não se afirma compatibilidade testada com
++16.5 nem equivalência integral ao ambiente cloud/stack Docker oficial.
++
++Os testes reais cobriram login inválido/válido, duas identidades e mesma obra,
++terceiro sem vínculo, DML negado via HTTP, schema private não exposto, logout,
++refresh de sessão, revogação de vínculo mesmo com JWT renovado, invalidação pelo
++serviço da UI, JWT expirado recusado e refresh válido/revogado. Testaram também
++UUID concorrente pela API, bloqueio de autoaprovação e aprovação pelo outro,
++além da identidade esperada nas RPCs da UI.
++
++## 5. Pendências e decisões
++
++- Revisão desta regra de cadeia linear e da nova migração por Zyra antes de
++  qualquer avanço remoto. Duplicatas preexistentes, se encontradas, não serão
++  resolvidas automaticamente.
++- Repetir o gate em runtime oficial Linux/container e configuração alvo antes
++  de implantação; a stack Windows mínima tem a adaptação de socket descrita.
++- Validação em navegador real com duas abas, interrupção de rede/PWA e dispositivos
++  dos operadores continua pendente. Os testes de UI/recuperação foram feitos
++  em DOM e storage/locks controlados; concorrência de banco e HTTP foi real.
++- Configuração cloud, SMTP, dados reais e qualquer operação remota permanecem
++  fora da autorização. Não houve alterações estéticas, push ou publicação.
++
++Fontes das ferramentas: [Go](https://go.dev/dl/),
++[Auth v2.197.0](https://github.com/supabase/auth/tree/v2.197.0),
++[PostgREST v14.1](https://github.com/PostgREST/postgrest/releases/tag/v14.1),
++[embedded-postgres](https://github.com/leinelissen/embedded-postgres).
++O preparador fixa checksums; o do Go veio do catálogo oficial, os dos ZIPs
++GitHub foram calculados após obtenção por HTTPS dos artefatos oficiais.

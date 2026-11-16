@@ -2,6 +2,7 @@
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://*.supabase.co wss://*.supabase.co http://127.0.0.1:54321 http://localhost:54321; object-src 'none'; base-uri 'self'; form-action 'self'">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#0c4a6e">
 <meta name="description" content="Detalhes financeiros e operacionais da obra selecionada.">
@@ -13,15 +14,17 @@
 <link rel="apple-touch-icon" href="images/apple-touch-icon.png">
 <link rel="stylesheet" href="css/style.css">
 </head>
-<body>
-<div class="dashboard detalhe-dashboard">
+<body data-pagina="detalhe">
+<p id="app-mensagem" class="app-mensagem" role="status" aria-live="polite"></p>
+<div data-private hidden class="dashboard detalhe-dashboard">
+<button type="button" class="atualizar-dados" data-action="atualizar">Atualizar dados</button>
 <div class="detalhe-topo">
 <div>
 <p class="agenda-eyebrow">Operacao da Obra</p>
 <h2>Detalhe da Obra</h2>
 <p id="usuario-logado" class="usuario-logado detalhe-usuario"></p>
 </div>
-<button class="agenda-voltar" onclick="voltar()">Voltar</button>
+<button class="agenda-voltar" data-action="voltar">Voltar</button>
 </div>
 <div class="detalhe-hero">
 <div class="info-obra detalhe-hero-card">
@@ -54,7 +57,7 @@
 <div class="resultado detalhe-resultado-card">
 <span class="detalhe-label">Resultado Atual</span>
 <h3 id="lucro"></h3>
-<p class="detalhe-ajuda">Lucro calculado automaticamente a partir de entradas e custos registrados.</p>
+<p class="detalhe-ajuda">Resultado de caixa calculado automaticamente a partir de entradas e custos registrados.</p>
 </div>
 <div class="detalhe-custos-card">
 <span class="detalhe-label">Soma de Custos</span>
@@ -77,7 +80,7 @@
 <option value="Em Execucao">Em Execucao</option>
 <option value="Finalizada">Finalizada</option>
 </select>
-<button onclick="alterarStatus()">Atualizar Status</button>
+<button data-action="alterarStatus">Atualizar Status</button>
 </div>
 <div class="agenda-obra detalhe-card">
 <div class="detalhe-card-head">
@@ -85,7 +88,7 @@
 <p>Defina a data prevista de execucao.</p>
 </div>
 <input type="date" id="data-execucao">
-<button onclick="agendarObra()">Agendar</button>
+<button data-action="agendarObra">Agendar</button>
 <p id="data-agendada" class="detalhe-data-agendada"></p>
 </div>
 </div>
@@ -103,8 +106,8 @@
 <p>Registre recebimentos para atualizar o caixa da obra.</p>
 </div>
 <input type="text" id="descricao-entrada" placeholder="Descricao">
-<input type="number" step="0.01" id="valor-entrada" placeholder="Valor">
-<button onclick="adicionarEntrada()">Adicionar Entrada</button>
+<input type="number" min="0" step="0.01" id="valor-entrada" placeholder="Valor">
+<button data-action="adicionarEntrada">Adicionar Entrada</button>
 </div>
 <div class="novo-custo detalhe-card">
 <div class="detalhe-card-head">
@@ -113,8 +116,8 @@
 </div>
 <input type="text" id="tipo" placeholder="Tipo (Material, Combustivel, etc)">
 <input type="text" id="descricao-custo" placeholder="Descricao">
-<input type="number" step="0.01" id="valor-custo" placeholder="Valor">
-<button onclick="adicionarCusto()">Adicionar</button>
+<input type="number" min="0" step="0.01" id="valor-custo" placeholder="Valor">
+<button data-action="adicionarCusto">Adicionar</button>
 </div>
 </div>
 <div class="detalhe-grid detalhe-grid-listas">
@@ -135,6 +138,6 @@
 </div>
 </div>
 <script src="js/pwa.js"></script>
-<script src="js/obras.js"></script>
+<script type="module" src="js/bootstrap.js"></script>
 </body>
 </html>

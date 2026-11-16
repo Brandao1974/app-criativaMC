@@ -1,0 +1,305 @@
+-- v3: closed directory. Auth owns passwords; this schema owns authorization.
+create table public.operadores (
+ usuario_id uuid primary key references public.profiles(id) on delete restrict,
+ usuario text not null unique check(usuario in ('ildebrando','edson','ivan')),
+ autorizado boolean not null default false, bloqueado boolean not null default true,
+ credencial_pronta boolean not null default false, geracao bigint not null default 1 check(geracao>0),
+ credencial_revisao bigint not null default 0
+);
+create table private.identidades_auth (
+ usuario text primary key check(usuario in ('ildebrando','edson','ivan')),
+ alias text not null unique, usuario_id uuid unique references auth.users(id) on delete restrict
+);
+create table private.administracao_app (
+ singleton boolean primary key default true check(singleton),
+ usuario_id uuid not null unique references public.operadores(usuario_id) on delete restrict,
+ instalado_por name not null, instalado_em timestamptz not null default now()
+);
+create table private.sessoes_app (
+ sessao_id uuid primary key references auth.sessions(id) on delete cascade,
+ usuario_id uuid not null references public.operadores(usuario_id), geracao bigint not null,
+ admitida_em timestamptz not null default now()
+);
+create index sessoes_app_usuario on private.sessoes_app(usuario_id);
+create table private.ativacoes (
+ id uuid primary key, usuario_id uuid not null references public.operadores(usuario_id),
+ digest text not null check(length(digest)=64), geracao bigint not null, credencial_revisao bigint not null,
+ finalidade text not null check(finalidade='credencial'),
+ estado text not null check(estado in ('emitida','consumida','concluida','revogada','falha')),
+ nonce uuid, expira_em timestamptz not null, tentativas integer not null default 0,
+ emitida_por uuid not null references public.profiles(id), criada_em timestamptz not null default now(),
+ check(expira_em <= criada_em+interval '15 minutes')
+);
+create index ativacoes_usuario on private.ativacoes(usuario_id);
+-- Auth remains the ONLY writer/verifier of password hashes. Observe a revision
+-- counter, never copy the hash. A late/foreign password change fails closed:
+-- invalidates readiness/admissions, and finalize requires exactly ONE change.
+create function private.credencial_auth_alterada() returns trigger
+language plpgsql security definer set search_path='' as $$
+begin
+ if new.encrypted_password is distinct from old.encrypted_password then
+  update public.operadores set credencial_pronta=false,credencial_revisao=credencial_revisao+1 where usuario_id=new.id;
+  delete from private.sessoes_app where usuario_id=new.id;
+  if exists(select 1 from public.operadores where usuario_id=new.id) then
+   perform private.auditar_identidade(new.id,'CREDENCIAL_AUTH_ALTERADA',new.id);
+  end if;
+ end if; return new;
+end $$;
+revoke all on function private.credencial_auth_alterada() from public,anon,authenticated,service_role;
+create trigger app_credencial_alterada after update of encrypted_password on auth.users
+ for each row execute function private.credencial_auth_alterada();
+create table private.operacoes_identidade (
+ autor_id uuid not null, id uuid not null, dados jsonb not null, resultado jsonb not null,
+ primary key(autor_id,id)
+);
+create table private.limites_acesso (
+ chave text primary key, janela timestamptz not null, tentativas integer not null
+);
+-- No runtime login is created by a migration; DBA provisions its SCRAM secret.
+do $$ begin
+ if not exists(select 1 from pg_roles where rolname='app_gateway') then create role app_gateway nologin noinherit; end if;
+end $$;
+revoke app_gateway from anon,authenticated,service_role;
+grant usage on schema private to app_gateway;
+alter table public.operadores enable row level security;
+revoke all on public.operadores from public,anon,authenticated,service_role,app_gateway;
+grant select on public.operadores to authenticated;
+create policy operador_le on public.operadores for select to authenticated using((select private.membro_ativo()));
+do $$ declare t text; begin
+ foreach t in array array['identidades_auth','administracao_app','sessoes_app','ativacoes','operacoes_identidade','limites_acesso'] loop
+  execute format('alter table private.%I enable row level security',t);
+  execute format('revoke all on private.%I from public,anon,authenticated,service_role,app_gateway',t);
+ end loop;
+end $$;
+
+create function private.operador_habilitado(p_id uuid) returns boolean
+language sql stable security definer set search_path='' as $$
+ select exists(select 1 from public.operadores where usuario_id=p_id and autorizado and not bloqueado and credencial_pronta);
+$$;
+create function private.sessao_valida(p_id uuid,p_sessao uuid) returns boolean
+language sql stable security definer set search_path='' as $$
+ select private.operador_habilitado(p_id) and exists(
+ select 1 from private.sessoes_app a join public.operadores o on o.usuario_id=a.usuario_id
+ join auth.sessions s on s.id=a.sessao_id and s.user_id=a.usuario_id
+ where a.sessao_id=p_sessao and a.usuario_id=p_id and a.geracao=o.geracao
+ and (s.not_after is null or s.not_after>statement_timestamp()));
+$$;
+create or replace function private.membro_ativo() returns boolean
+language sql stable security definer set search_path='' as $$
+ select private.sessao_valida(auth.uid(),
+  (nullif(current_setting('request.jwt.claims',true),'')::jsonb->>'session_id')::uuid);
+$$;
+create or replace function private.exigir_membro() returns uuid
+language plpgsql security definer set search_path='' as $$
+begin
+ perform 1 from public.operadores where usuario_id=auth.uid() for share;
+ if not private.membro_ativo() then raise exception 'Operador não autorizado' using errcode='42501'; end if;
+ return auth.uid();
+end $$;
+create function private.exigir_admin(p_id uuid,p_sessao uuid) returns void
+language plpgsql security definer set search_path='' as $$
+begin
+ perform 1 from public.operadores where usuario_id=p_id for share;
+ if not private.sessao_valida(p_id,p_sessao) or not exists(
+ select 1 from private.administracao_app a join public.operadores o on o.usuario_id=a.usuario_id
+ where a.usuario_id=p_id and o.usuario='ildebrando') then
+ raise exception 'Acesso negado' using errcode='42501'; end if;
+end $$;
+create function private.auditar_identidade(p_ator uuid,p_acao text,p_alvo uuid,p_dados jsonb default '{}') returns void
+language sql security definer set search_path='' as $$
+ insert into public.auditoria_eventos(autor_id,acao,entidade,entidade_id,depois)
+ values(p_ator,p_acao,'operadores',p_alvo::text,p_dados);
+$$;
+-- A fixed window is serialized in PostgreSQL, shared by all server instances.
+create function private.limitar_acesso(p_chave text,p_max integer) returns boolean
+language plpgsql security definer set search_path='' as $$
+declare n integer; begin
+ insert into private.limites_acesso values(p_chave,statement_timestamp(),1)
+ on conflict(chave) do update set
+ tentativas=case when limites_acesso.janela<statement_timestamp()-interval '15 minutes' then 1 else limites_acesso.tentativas+1 end,
+ janela=case when limites_acesso.janela<statement_timestamp()-interval '15 minutes' then statement_timestamp() else limites_acesso.janela end
+ returning tentativas into n;
+ delete from private.limites_acesso where janela<statement_timestamp()-interval '1 day';
+ return n<=p_max;
+end $$;
+create function private.resolver_login(p_usuario text) returns jsonb
+language sql stable security definer set search_path='' as $$
+ select jsonb_build_object('id',o.usuario_id,'alias',i.alias,'geracao',o.geracao::text)
+ from public.operadores o join private.identidades_auth i on i.usuario_id=o.usuario_id
+ where o.usuario=p_usuario and private.operador_habilitado(o.usuario_id);
+$$;
+create function private.admitir_sessao(p_id uuid,p_sessao uuid,p_geracao bigint) returns boolean
+language plpgsql security definer set search_path='' as $$
+begin
+ perform 1 from public.operadores where usuario_id=p_id and geracao=p_geracao for share;
+ if not found or not private.operador_habilitado(p_id) or not exists(select 1 from auth.sessions
+ where id=p_sessao and user_id=p_id and (not_after is null or not_after>statement_timestamp())) then return false; end if;
+ insert into private.sessoes_app(sessao_id,usuario_id,geracao) values(p_sessao,p_id,p_geracao) on conflict do nothing;
+ return private.sessao_valida(p_id,p_sessao);
+end $$;
+-- Installer-only reservation. Opaque alias persisted BEFORE calling Auth.
+create function private.reservar_identidade(p_usuario text) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare r private.identidades_auth; begin
+ insert into private.identidades_auth(usuario,alias) values(p_usuario,gen_random_uuid()::text||'@identidade.invalid') on conflict(usuario) do nothing;
+ select * into strict r from private.identidades_auth where usuario=p_usuario;
+ return to_jsonb(r);
+end $$;
+create function private.instalar_admin(p_id uuid) returns void
+language plpgsql security definer set search_path='' as $$
+declare atual uuid; begin
+ perform pg_advisory_xact_lock(194762915);
+ select usuario_id into atual from private.administracao_app;
+ if atual is not null then
+  if atual<>p_id then raise exception 'Administrador original não corresponde'; end if; return;
+ end if;
+ if not exists(select 1 from private.identidades_auth i join auth.users u on u.email=i.alias
+ where i.usuario='ildebrando' and u.id=p_id) then raise exception 'Identidade de instalação inválida'; end if;
+ insert into public.profiles(id,nome) values(p_id,'Ildebrando');
+ insert into public.operadores(usuario_id,usuario,autorizado,bloqueado) values(p_id,'ildebrando',true,false);
+ update private.identidades_auth set usuario_id=p_id where usuario='ildebrando';
+ insert into private.administracao_app(usuario_id,instalado_por) values(p_id,session_user);
+ perform private.auditar_identidade(p_id,'INSTALACAO',p_id,jsonb_build_object('instalador',session_user));
+end $$;
+create function private.recuperar_admin(p_original uuid) returns void
+language plpgsql security definer set search_path='' as $$
+begin
+ perform pg_advisory_xact_lock(194762915);
+ if not exists(select 1 from private.administracao_app where usuario_id=p_original) then raise exception 'UUID original obrigatório'; end if;
+ update public.operadores set autorizado=true,bloqueado=false,credencial_pronta=false,geracao=geracao+1 where usuario_id=p_original and usuario='ildebrando';
+ update private.ativacoes set estado='revogada' where usuario_id=p_original and estado in ('emitida','consumida');
+ perform private.auditar_identidade(p_original,'RECUPERACAO_OFFLINE',p_original,jsonb_build_object('instalador',session_user));
+end $$;
+create function private.listar_operadores(p_ator uuid,p_sessao uuid) returns jsonb
+language plpgsql security definer set search_path='' as $$
+begin
+ perform private.exigir_admin(p_ator,p_sessao);
+ return (select coalesce(jsonb_agg(to_jsonb(o) order by usuario),'[]') from public.operadores o);
+end $$;
+create function private.preparar_cadastro(p_ator uuid,p_sessao uuid,p_usuario text) returns jsonb
+language plpgsql security definer set search_path='' as $$
+begin
+ perform private.exigir_admin(p_ator,p_sessao);
+ if p_usuario not in ('edson','ivan') then raise exception 'Usuário não permitido' using errcode='22023'; end if;
+ return private.reservar_identidade(p_usuario);
+end $$;
+create function private.localizar_auth(p_usuario text) returns uuid
+language sql stable security definer set search_path='' as $$
+ select u.id from auth.users u join private.identidades_auth i on i.alias=u.email where i.usuario=p_usuario;
+$$;
+create function private.estado_sincronizacao(p_ator uuid,p_sessao uuid,p_usuario text) returns jsonb
+language plpgsql security definer set search_path='' as $$
+begin
+ perform private.exigir_admin(p_ator,p_sessao);
+ return(select jsonb_build_object('id',usuario_id,'bloqueado',bloqueado) from public.operadores where usuario=p_usuario);
+end $$;
+create function private.cadastrar_operador(p_ator uuid,p_sessao uuid,p_usuario text,p_id uuid) returns void
+language plpgsql security definer set search_path='' as $$
+begin
+ perform private.exigir_admin(p_ator,p_sessao);
+ if p_usuario not in ('edson','ivan') or not exists(select 1 from private.identidades_auth i
+ join auth.users u on u.email=i.alias where i.usuario=p_usuario and u.id=p_id) then raise exception 'Identidade inválida'; end if;
+ insert into public.profiles(id,nome) values(p_id,initcap(p_usuario)) on conflict(id) do nothing;
+ insert into public.operadores(usuario_id,usuario,autorizado,bloqueado) values(p_id,p_usuario,true,false) on conflict(usuario) do nothing;
+ if not exists(select 1 from public.operadores where usuario_id=p_id and usuario=p_usuario) then raise exception 'Identidade divergente'; end if;
+ update private.identidades_auth set usuario_id=p_id where usuario=p_usuario;
+ perform private.auditar_identidade(p_ator,'CADASTRO',p_id);
+end $$;
+create function private.gerir_operador(p_ator uuid,p_sessao uuid,p_usuario text,p_acao text,p_op uuid) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare o public.operadores; anterior private.operacoes_identidade; dados jsonb:=jsonb_build_object('usuario',p_usuario,'acao',p_acao); begin
+ perform private.exigir_admin(p_ator,p_sessao);
+ perform pg_advisory_xact_lock(hashtextextended(p_ator::text||p_op::text,0));
+ select * into anterior from private.operacoes_identidade where autor_id=p_ator and id=p_op;
+ if found then
+  if anterior.dados<>dados then raise exception 'Chave reutilizada' using errcode='22023'; end if; return anterior.resultado;
+ end if;
+ select * into strict o from public.operadores where usuario=p_usuario for update;
+ if o.usuario='ildebrando' or p_acao not in ('ativar','bloquear','reativar') then raise exception 'Ação não permitida' using errcode='42501'; end if;
+ update public.operadores set autorizado=true,bloqueado=(p_acao='bloquear'),geracao=geracao+1 where usuario_id=o.usuario_id;
+ update private.ativacoes set estado='revogada' where usuario_id=o.usuario_id and estado in ('emitida','consumida');
+ perform private.auditar_identidade(p_ator,upper(p_acao),o.usuario_id);
+ insert into private.operacoes_identidade values(p_ator,p_op,dados,'{"ok":true}');
+ return '{"ok":true}';
+end $$;
+-- Installer may issue initial/recovery code via this function; runtime uses
+-- emitir_ativacao, which validates Ildebrando's live authenticated session.
+create function private.criar_ativacao(p_ator uuid,p_alvo uuid,p_id uuid,p_digest text) returns void
+language plpgsql security definer set search_path='' as $$
+declare g bigint; begin
+ select geracao into strict g from public.operadores where usuario_id=p_alvo and autorizado and not bloqueado for update;
+ update public.operadores set credencial_pronta=false,geracao=geracao+1 where usuario_id=p_alvo returning geracao into g;
+ update private.ativacoes set estado='revogada' where usuario_id=p_alvo and estado in ('emitida','consumida');
+ insert into private.ativacoes(id,usuario_id,digest,geracao,credencial_revisao,finalidade,estado,expira_em,emitida_por)
+ select p_id,p_alvo,p_digest,g,credencial_revisao,'credencial','emitida',now()+interval '15 minutes',p_ator
+ from public.operadores where usuario_id=p_alvo;
+ perform private.auditar_identidade(p_ator,'CODIGO_EMITIDO',p_alvo,jsonb_build_object('convite',p_id));
+end $$;
+create function private.emitir_ativacao(p_ator uuid,p_sessao uuid,p_usuario text,p_id uuid,p_digest text) returns void
+language plpgsql security definer set search_path='' as $$
+declare alvo uuid; begin
+ perform private.exigir_admin(p_ator,p_sessao);
+ select usuario_id into strict alvo from public.operadores where usuario=p_usuario;
+ perform private.criar_ativacao(p_ator,alvo,p_id,p_digest);
+end $$;
+create function private.consumir_ativacao(p_usuario text,p_id uuid,p_digest text,p_nonce uuid) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare a private.ativacoes; o public.operadores; begin
+ -- Uniform ordering: operator -> invitation, also used by block/reissue/finalize.
+ select * into o from public.operadores where usuario=p_usuario for update;
+ if not found then return null; end if;
+ select * into a from private.ativacoes where id=p_id and usuario_id=o.usuario_id for update;
+ if not found then return null; end if;
+ if a.estado<>'emitida' or a.expira_em<=statement_timestamp() or a.geracao<>o.geracao
+ or not o.autorizado or o.bloqueado or a.tentativas>=5 then return null; end if;
+ update private.ativacoes set tentativas=tentativas+1 where id=p_id;
+ if a.digest<>p_digest then return null; end if;
+ update private.ativacoes set estado='consumida',nonce=p_nonce where id=p_id;
+ update private.ativacoes set credencial_revisao=o.credencial_revisao where id=p_id;
+ perform private.auditar_identidade(o.usuario_id,'CODIGO_CONSUMIDO',o.usuario_id,jsonb_build_object('convite',p_id));
+ return jsonb_build_object('id',o.usuario_id,'geracao',o.geracao::text);
+end $$;
+create function private.finalizar_ativacao(p_id uuid,p_nonce uuid,p_ok boolean) returns boolean
+language plpgsql security definer set search_path='' as $$
+declare a private.ativacoes; o public.operadores; begin
+ select * into o from public.operadores where usuario_id=(select usuario_id from private.ativacoes where id=p_id) for update;
+ select * into a from private.ativacoes where id=p_id for update;
+ if a.estado is distinct from 'consumida' or a.nonce is distinct from p_nonce then return false; end if;
+ if not p_ok or a.geracao<>o.geracao or not o.autorizado or o.bloqueado
+ or o.credencial_revisao<>a.credencial_revisao+1 then
+  update private.ativacoes set estado='falha' where id=p_id; return false;
+ end if;
+ update public.operadores set credencial_pronta=true where usuario_id=o.usuario_id;
+ update private.ativacoes set estado='concluida' where id=p_id;
+ perform private.auditar_identidade(o.usuario_id,'CREDENCIAL_CONCLUIDA',o.usuario_id);
+ return true;
+end $$;
+
+-- Import authority also uses the new directory; original session_user mapping
+-- and maintenance lock remain unchanged. No browser administration privilege.
+create or replace function private.exigir_importador() returns uuid
+language plpgsql security definer set search_path='' as $$
+declare ator uuid; begin
+ select i.ator_id into ator from private.importacao_operadores i join public.operadores o on o.usuario_id=i.ator_id
+ where i.login_name=session_user and i.ativo and i.valido_ate>statement_timestamp()
+ and o.autorizado and not o.bloqueado and o.credencial_pronta for share of i,o;
+ if not found then raise exception 'Importador não autorizado' using errcode='42501'; end if; return ator;
+end $$;
+-- Legacy membership is retained as history, never an authority or public directory.
+revoke all on public.app_membros from authenticated,anon,public;
+
+-- Explicit grants only. Including inherited PUBLIC rights is essential.
+do $$ declare r record; begin
+ for r in select p.oid::regprocedure as signature from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+ where n.nspname='private' and p.proname in (
+ 'operador_habilitado','sessao_valida','exigir_admin','auditar_identidade','limitar_acesso','resolver_login','admitir_sessao',
+ 'reservar_identidade','instalar_admin','recuperar_admin','listar_operadores','preparar_cadastro','cadastrar_operador',
+ 'gerir_operador','criar_ativacao','emitir_ativacao','consumir_ativacao','finalizar_ativacao','localizar_auth','estado_sincronizacao') loop
+ execute format('revoke all on function %s from public,anon,authenticated,service_role,app_gateway',r.signature);
+ end loop;
+end $$;
+grant execute on function private.limitar_acesso(text,integer),private.resolver_login(text),
+ private.admitir_sessao(uuid,uuid,bigint),private.listar_operadores(uuid,uuid),private.preparar_cadastro(uuid,uuid,text),
+ private.cadastrar_operador(uuid,uuid,text,uuid),private.gerir_operador(uuid,uuid,text,text,uuid),
+ private.emitir_ativacao(uuid,uuid,text,uuid,text),private.consumir_ativacao(text,uuid,text,uuid),
+ private.finalizar_ativacao(uuid,uuid,boolean),private.localizar_auth(text),private.estado_sincronizacao(uuid,uuid,text) to app_gateway;

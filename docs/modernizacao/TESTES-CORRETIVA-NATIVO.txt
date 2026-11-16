@@ -1,0 +1,17 @@
+PostgreSQL nativo: PostgreSQL 17.11 on x86_64-windows, compiled by msvc-19.44.35228, 64-bit
+✔ conexões independentes: mesma criação e chave de operação (1717.6996ms)
+✔ conexões independentes: pedidos simultâneos e decisões concorrentes (980.4311ms)
+✔ conexões independentes: retry simultâneo de aprovação gera único estorno (647.8531ms)
+✔ login administrativo real: mínimo privilégio e autoria pelo session_user (386.9597ms)
+✔ API não pode simular login importador nem com claim de operador válido (175.1288ms)
+✔ correções concorrentes: só um sucessor do original revertido (737.985ms)
+✔ encerramento x envio concorrente: um efeito ou tombstone, nunca duplicação (269.0398ms)
+✔ janela de importação bloqueia escrita concorrente até o fim da transação (397.9717ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6405.3686

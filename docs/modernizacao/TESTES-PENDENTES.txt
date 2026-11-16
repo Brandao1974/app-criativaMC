@@ -1,0 +1,15 @@
+﹣ GoTrue: senha incorreta não cria sessão (2.1853ms) # Stack Supabase/Auth local e fixtures não disponíveis
+﹣ GoTrue/PostgREST: dois logins individuais veem a mesma base (0.363ms) # Stack Supabase/Auth local e fixtures não disponíveis
+﹣ PostgREST: terceiro bloqueado e DML direto recusado com código de privilégio (0.2911ms) # Stack Supabase/Auth local e fixtures não disponíveis
+﹣ GoTrue: logout remove sessão local e consulta anônima é recusada (0.2468ms) # Stack Supabase/Auth local e fixtures não disponíveis
+﹣ conexões independentes: mesma criação e chave de operação (2.6423ms) # LOCAL_PG_URL não definido; PostgreSQL nativo indisponível
+﹣ conexões independentes: pedidos simultâneos e decisões concorrentes (0.5087ms) # LOCAL_PG_URL não definido; PostgreSQL nativo indisponível
+﹣ conexões independentes: retry simultâneo de aprovação gera único estorno (0.4761ms) # LOCAL_PG_URL não definido; PostgreSQL nativo indisponível
+ℹ tests 7
+ℹ suites 0
+ℹ pass 0
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 7
+ℹ todo 0
+ℹ duration_ms 375.1072

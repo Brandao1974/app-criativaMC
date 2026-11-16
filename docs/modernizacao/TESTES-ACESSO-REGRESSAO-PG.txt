@@ -1,0 +1,21 @@
+
+> test:native:isolated
+> node scripts/test-native.mjs
+
+PostgreSQL nativo: PostgreSQL 17.11 on x86_64-windows, compiled by msvc-19.44.35228, 64-bit
+✔ conexões independentes: mesma criação e chave de operação (2644.0178ms)
+✔ conexões independentes: pedidos simultâneos e decisões concorrentes (1391.113ms)
+✔ conexões independentes: retry simultâneo de aprovação gera único estorno (798.9466ms)
+✔ login administrativo real: mínimo privilégio e autoria pelo session_user (624.5482ms)
+✔ API não pode simular login importador nem com claim de operador válido (343.4396ms)
+✔ correções concorrentes: só um sucessor do original revertido (1310.7931ms)
+✔ encerramento x envio concorrente: um efeito ou tombstone, nunca duplicação (496.19ms)
+✔ janela de importação bloqueia escrita concorrente até o fim da transação (421.191ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 9493.7097

@@ -1,0 +1,52 @@
+
+> test:access:isolated
+> node scripts/test-auth-local.mjs --access
+
+Stack exclusivamente local: Auth 2.197.0 (socket Windows adaptado) + PostgREST 14.1 + PostgreSQL 17.11; três fixtures .test.
+✔ AC01 instalação privada cria exclusivamente Ildebrando, sem acesso parcial (1105.0444ms)
+✔ AC02 instalação concorrente/repetida conserva UUID e singleton (106.3765ms)
+✔ AC03 primeiro acesso e login por username dos três sem e-mail (6666.57ms)
+✔ AC04 Gustavo com JWT Auth preexistente perde RPC/RLS e gateway (1019.059ms)
+✔ AC05 erros uniformes, CORS fechado e limite persistido por origem/usuário (4688.2689ms)
+✔ AC06 login direto no Auth não admite sessão no aplicativo (580.2428ms)
+✔ AC07 metadados e payloads não promovem administrador (1812.1618ms)
+✔ AC08 Edson/Ivan não executam nenhuma ação administrativa (6002.4493ms)
+✔ AC09 somente Ildebrando gerencia, com idempotência e auditoria (4698.7432ms)
+✔ AC10 lista fechada e cadastro repetido sem takeover (3152.064ms)
+✔ AC11 administrador único não pode se bloquear/remover (1488.0252ms)
+✔ AC12 código forte, destinatário/prazo/finalidade e nenhum bruto no banco (1836.5368ms)
+✔ AC13 senha pessoal é definida/verificada pelo Auth real (2488.918ms)
+✔ AC14 usado, substituído, expirado e revogado não reutilizam código (4370.1836ms)
+✔ AC15 resgates simultâneos em conexões independentes: só um vencedor (2118.1889ms)
+✔ AC16 código não muda admin, autorização ou bloqueio; campos extras recusados (2775.8247ms)
+✔ AC17 bloqueio entre consumo e conclusão invalida geração e nega acesso (5588.1544ms)
+✔ AC18 Auth altera senha mas falha final deixa código consumido e acesso fechado (4046.8048ms)
+✔ AC19 reconciliação de criação Auth parcial reutiliza alias/UUID (720.1826ms)
+✔ AC20 autorização e credencial são condições independentes obrigatórias (2479.3608ms)
+✔ AC21 bloqueio/reativação não ressuscita JWT nem refresh antigo (5002.3659ms)
+✔ AC22 refresh mantém session_id e autorização; logout invalida JWT ainda vigente (2838.8412ms)
+✔ AC23 seis pares ordenados aprovam/rejeitam; autoaprovação sempre negada (417.2555ms)
+✔ AC24 solicitante bloqueado mantém pedido pendente sem estorno (3020.6919ms)
+✔ AC25 três operadores compartilham mesmos IDs, totais e financeiro (171.9967ms)
+✔ AC26 recuperação financeira por UUID continua vinculada ao ator (39.4286ms)
+✔ AC27 navegador/servidor não persistem senha/código; erros não refletem corpo (376.8193ms)
+✔ AC28 recuperação offline preserva UUID original e não promove terceiros (1286.0375ms)
+✔ AC29 mudanças de metadados Auth não alteram diretório/admin/permissão (1119.144ms)
+✔ AC30 tabelas/funções privadas e caminhos legados não aceitam DML/EXECUTE (46.9467ms)
+GoTrueClient@sb-127-auth-token:3 (2.119.0) 2026-11-16T02:38:30.413Z Multiple GoTrueClient instances detected in the same browser context. It is not an error, but this should be avoided as it may produce undefined behavior when used concurrently under the same storage key.
+✔ AC31 formulários reais de ativação/login, gateway, SDK e PostgREST v3 (3219.8353ms)
+✔ AC32 financeiro v3 concorrente: um efeito, decisão única e estorno exato (67.0652ms)
+✔ AC33 importação v3 usa diretório novo e mantém idempotência (28.6041ms)
+✔ AC34 senha alterada fora da ativação ou duas alterações concorrentes falham fechadas (6488.3275ms)
+✔ AC35 replay de bloqueio antigo não bane operador já reativado (4481.2951ms)
+✔ AC36 adapter Edge: CORS/preflight, limite do corpo e administração real (1525.2436ms)
+✔ AC37 cinco tentativas invalidam somente convite; reemissão permite primeiro acesso (4948.0037ms)
+✔ AC38 entrypoint Edge executa em Deno real: login e administração locais (2676.0039ms)
+ℹ tests 38
+ℹ suites 0
+ℹ pass 38
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 97962.612

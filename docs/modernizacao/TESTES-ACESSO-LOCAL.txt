@@ -1,0 +1,248 @@
+
+> test
+> node --test tests/*.test.mjs
+
+TAP version 13
+# Subtest: auth: credenciais encaminhadas ao gateway; sessão SDK e membro validados
+ok 1 - auth: credenciais encaminhadas ao gateway; sessão SDK e membro validados
+  ---
+  duration_ms: 5.9571
+  type: 'test'
+  ...
+# Subtest: auth: senha inválida não consulta dados; terceiro autenticado perde sessão local
+ok 2 - auth: senha inválida não consulta dados; terceiro autenticado perde sessão local
+  ---
+  duration_ms: 10.2065
+  type: 'test'
+  ...
+# Subtest: auth: sem sessão não carrega financeiro; logout notifica limpeza
+ok 3 - auth: sem sessão não carrega financeiro; logout notifica limpeza
+  ---
+  duration_ms: 0.8704
+  type: 'test'
+  ...
+# Subtest: auth: troca de usuário invalida resposta iniciada com identidade anterior
+ok 4 - auth: troca de usuário invalida resposta iniciada com identidade anterior
+  ---
+  duration_ms: 1.0762
+  type: 'test'
+  ...
+# Subtest: refresh da mesma identidade revalida autorização sem limpar sessão válida
+ok 5 - refresh da mesma identidade revalida autorização sem limpar sessão válida
+  ---
+  duration_ms: 22.7648
+  type: 'test'
+  ...
+# Subtest: refresh não mantém acesso de operador desativado; falha de rede não vira logout
+ok 6 - refresh não mantém acesso de operador desativado; falha de rede não vira logout
+  ---
+  duration_ms: 31.023
+  type: 'test'
+  ...
+# Subtest: resposta de escrita após troca de usuário não é tratada como confirmação
+ok 7 - resposta de escrita após troca de usuário não é tratada como confirmação
+  ---
+  duration_ms: 1.2014
+  type: 'test'
+  ...
+# Subtest: correção: único sucessor; uma nova correção exige aprovar estorno do sucessor
+ok 8 - correção: único sucessor; uma nova correção exige aprovar estorno do sucessor
+  ---
+  duration_ms: 9875.2234
+  type: 'test'
+  ...
+# Subtest: rede incerta após COMMIT: reload recupera ID, não repete e não persiste payload
+ok 9 - rede incerta após COMMIT: reload recupera ID, não repete e não persiste payload
+  ---
+  duration_ms: 30.3736
+  type: 'test'
+  ...
+# Subtest: rede perdida antes do envio: reload reutiliza UUID; outra ação é bloqueada
+ok 10 - rede perdida antes do envio: reload reutiliza UUID; outra ação é bloqueada
+  ---
+  duration_ms: 41.4048
+  type: 'test'
+  ...
+# Subtest: encerramento grava tombstone e impede requisição atrasada
+ok 11 - encerramento grava tombstone e impede requisição atrasada
+  ---
+  duration_ms: 20.94
+  type: 'test'
+  ...
+# Subtest: duas abas usam o mesmo registro e falha do armazenamento impede envio
+ok 12 - duas abas usam o mesmo registro e falha do armazenamento impede envio
+  ---
+  duration_ms: 41.2164
+  type: 'test'
+  ...
+# Subtest: regressão v1: múltiplas correções eram possíveis; upgrade recusa duplicatas sem apagar dados
+ok 13 - regressão v1: múltiplas correções eram possíveis; upgrade recusa duplicatas sem apagar dados
+  ---
+  duration_ms: 5657.9713
+  type: 'test'
+  ...
+# Subtest: migração reaplicável e checksum divergente bloqueado
+ok 14 - migração reaplicável e checksum divergente bloqueado
+  ---
+  duration_ms: 9694.8647
+  type: 'test'
+  ...
+# Subtest: sem sessão, anônimo e terceiro são bloqueados; metadata não autoriza
+ok 15 - sem sessão, anônimo e terceiro são bloqueados; metadata não autoriza
+  ---
+  duration_ms: 126.0644
+  type: 'test'
+  ...
+# Subtest: criação idempotente e base compartilhada
+ok 16 - criação idempotente e base compartilhada
+  ---
+  duration_ms: 136.0315
+  type: 'test'
+  ...
+# Subtest: entrada/despesa e saldo exato; valor inválido e campos forjados recusados
+ok 17 - entrada/despesa e saldo exato; valor inválido e campos forjados recusados
+  ---
+  duration_ms: 126.2394
+  type: 'test'
+  ...
+# Subtest: pedido não afeta saldo, pendência única e autoaprovação/rejeição bloqueadas
+ok 18 - pedido não afeta saldo, pendência única e autoaprovação/rejeição bloqueadas
+  ---
+  duration_ms: 63.4995
+  type: 'test'
+  ...
+# Subtest: aprovação atômica, estorno integral e retries sem duplicação
+ok 19 - aprovação atômica, estorno integral e retries sem duplicação
+  ---
+  duration_ms: 123.2943
+  type: 'test'
+  ...
+# Subtest: rejeição inversa, motivo obrigatório e rollback sem efeito parcial
+ok 20 - rejeição inversa, motivo obrigatório e rollback sem efeito parcial
+  ---
+  duration_ms: 132.2697
+  type: 'test'
+  ...
+# Subtest: atualização CAS, evento de agendamento e retry depois da mudança
+ok 21 - atualização CAS, evento de agendamento e retry depois da mudança
+  ---
+  duration_ms: 65.2985
+  type: 'test'
+  ...
+# Subtest: DML e rotinas administrativas inacessíveis ao cliente
+ok 22 - DML e rotinas administrativas inacessíveis ao cliente
+  ---
+  duration_ms: 123.0806
+  type: 'test'
+  ...
+# Subtest: triggers defendem inclusive escrita administrativa inconsistente
+ok 23 - triggers defendem inclusive escrita administrativa inconsistente
+  ---
+  duration_ms: 14.4218
+  type: 'test'
+  ...
+# Subtest: desativação elimina acesso mesmo com claim anterior
+ok 24 - desativação elimina acesso mesmo com claim anterior
+  ---
+  duration_ms: 18.6298
+  type: 'test'
+  ...
+# Subtest: RLS em todas as tabelas e nenhum definer público
+ok 25 - RLS em todas as tabelas e nenhum definer público
+  ---
+  duration_ms: 9.3291
+  type: 'test'
+  ...
+# Subtest: vetor financeiro obrigatório, 10 mil centavos e agregado acima de Number seguro
+ok 26 - vetor financeiro obrigatório, 10 mil centavos e agregado acima de Number seguro
+  ---
+  duration_ms: 16032.2938
+  type: 'test'
+  ...
+# Subtest: moeda: parser estrito e totais além de Number sem arredondamento
+ok 27 - moeda: parser estrito e totais além de Number sem arredondamento
+  ---
+  duration_ms: 9696.5992
+  type: 'test'
+  ...
+# Subtest: dry-run preserva original, categoria, assinaturas e saldo sem inventar ajuste
+ok 28 - dry-run preserva original, categoria, assinaturas e saldo sem inventar ajuste
+  ---
+  duration_ms: 2.7723
+  type: 'test'
+  ...
+# Subtest: quarentena por obra, sem importar parcialmente filhos inválidos
+ok 29 - quarentena por obra, sem importar parcialmente filhos inválidos
+  ---
+  duration_ms: 11.4429
+  type: 'test'
+  ...
+# Subtest: SQL: repetir fonte por outro operador não duplica; autoria legada separada
+ok 30 - SQL: repetir fonte por outro operador não duplica; autoria legada separada
+  ---
+  duration_ms: 252.6649
+  type: 'test'
+  ...
+# Subtest: SQL: falha em filho faz rollback da obra e manifesto; retomada limpa
+ok 31 - SQL: falha em filho faz rollback da obra e manifesto; retomada limpa
+  ---
+  duration_ms: 98.812
+  type: 'test'
+  ...
+# Subtest: PWA: um build, cache limitado ao shell e preservação de outros aplicativos
+ok 32 - PWA: um build, cache limitado ao shell e preservação de outros aplicativos
+  ---
+  duration_ms: 100.3081
+  type: 'test'
+  ...
+# Subtest: sete HTMLs sem handlers inline ou scripts externos; layout principal preservado
+ok 33 - sete HTMLs sem handlers inline ou scripts externos; layout principal preservado
+  ---
+  duration_ms: 8545.8679
+  type: 'test'
+  ...
+# Subtest: obras: criação por formulário e XSS é mostrado como texto
+ok 34 - obras: criação por formulário e XSS é mostrado como texto
+  ---
+  duration_ms: 186.0519
+  type: 'test'
+  ...
+# Subtest: detalhe: entrada, custo, pedido, aprovação pelo outro operador e totais
+ok 35 - detalhe: entrada, custo, pedido, aprovação pelo outro operador e totais
+  ---
+  duration_ms: 494.9135
+  type: 'test'
+  ...
+# Subtest: dashboard, caixa e agenda usam o mesmo saldo e data; logout limpa DOM
+ok 36 - dashboard, caixa e agenda usam o mesmo saldo e data; logout limpa DOM
+  ---
+  duration_ms: 192.1261
+  type: 'test'
+  ...
+# Subtest: login envia com Enter/form e index decide pela sessão
+ok 37 - login envia com Enter/form e index decide pela sessão
+  ---
+  duration_ms: 73.9795
+  type: 'test'
+  ...
+# Subtest: login continua utilizável após sessão não autorizada ser encerrada
+ok 38 - login continua utilizável após sessão não autorizada ser encerrada
+  ---
+  duration_ms: 82.8107
+  type: 'test'
+  ...
+# Subtest: reload após resposta perdida confirma a operação anterior sem novo lançamento
+ok 39 - reload após resposta perdida confirma a operação anterior sem novo lançamento
+  ---
+  duration_ms: 121.0165
+  type: 'test'
+  ...
+1..39
+# tests 39
+# suites 0
+# pass 39
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 28298.7555

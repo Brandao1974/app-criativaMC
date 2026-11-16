@@ -1,0 +1,17 @@
+project_id = "app-criativamc-local"
+
+[auth]
+enable_signup = false
+enable_anonymous_sign_ins = false
+minimum_password_length = 12
+
+[auth.email]
+enable_signup = false
+enable_confirmations = false
+
+[functions.acesso]
+# Login/activation are intentionally unauthenticated. Admin actions validate
+# Auth JWT, real session, current access generation and Ildebrando UUID themselves.
+verify_jwt = false
+entrypoint = "./functions/acesso/index.ts"
+import_map = "./functions/acesso/deno.json"
