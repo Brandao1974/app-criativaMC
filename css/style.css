@@ -1,3 +1,12 @@
+[hidden]{display:none !important}
+.app-mensagem{position:fixed;top:0;left:0;right:0;margin:0;padding:10px 16px;background:#eef4f8;color:#12384e;z-index:10;text-align:center}
+.app-mensagem:empty{display:none}
+.app-mensagem[data-erro="true"]{background:#fff0ef;color:#9d2525}
+.atualizar-dados{width:auto;margin:18px 0;background:#145b7d}
+.login-container label{display:block;text-align:left;margin-top:12px}
+.login-container input{box-sizing:border-box}
+button:disabled{opacity:.65;cursor:wait}
+:focus-visible{outline:3px solid #1b7f78;outline-offset:3px}
 body{
 font-family: Arial, Helvetica, sans-serif;
 background:

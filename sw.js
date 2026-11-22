@@ -1,88 +1,22 @@
-const CACHE_NAME = "gestao-obras-v1";
-const APP_SHELL = [
-  "./",
-  "./index.html",
-  "./login.html",
-  "./dashboard.html",
-  "./obras.html",
-  "./obras-detalhe.html",
-  "./caixa.html",
-  "./agenda.html",
-  "./css/style.css",
-  "./js/auth.js",
-  "./js/dashboard.js",
-  "./js/obras.js",
-  "./js/caixa.js",
-  "./js/agenda.js",
-  "./js/pwa.js",
-  "./manifest.json",
-  "./images/apple-touch-icon.png",
-  "./images/favicon.ico",
-  "./images/favicon.svg",
-  "./images/favicon-96x96.png",
-  "./images/web-app-manifest-192x192.png",
-  "./images/web-app-manifest-512x512.png",
-  "https://cdn.jsdelivr.net/npm/chart.js"
-];
-
-self.addEventListener("install", event => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then(cache => cache.addAll(APP_SHELL))
-  );
-  self.skipWaiting();
+const BUILD = 'criativamc-7265b643e43c6517';
+const PREFIX = 'criativamc-';
+const SHELL = ['index.html','login.html','dashboard.html','obras.html','obras-detalhe.html','caixa.html','agenda.html',
+'css/style.css','js/bootstrap.js','js/app.js','js/servicos.js','js/acesso.js','js/administracao.js','js/config.js','js/ui.js','js/dinheiro.js','js/recuperacao.js',
+'js/vendor/supabase.js','js/vendor/chart.js','js/agenda-efeitos.js','js/pwa.js','manifest.json','images/web-app-manifest-192x192.png','images/web-app-manifest-512x512.png'];
+const ALLOWED = new Set(SHELL.map(p => new URL(p,self.registration.scope).href));
+self.addEventListener('install',e=>{
+ e.waitUntil(caches.open(BUILD).then(c=>c.addAll(SHELL.map(p=>new URL(p,self.registration.scope).href))));
 });
-
-self.addEventListener("activate", event => {
-  event.waitUntil(
-    caches.keys().then(cacheNames =>
-      Promise.all(
-        cacheNames
-          .filter(cacheName => cacheName !== CACHE_NAME)
-          .map(cacheName => caches.delete(cacheName))
-      )
-    )
-  );
-  self.clients.claim();
+self.addEventListener('message',e=>{if(e.data==='ACTIVATE_BUILD')self.skipWaiting();});
+self.addEventListener('activate',e=>{
+ e.waitUntil((async()=>{
+  for(const key of await caches.keys())if(key.startsWith(PREFIX)&&key!==BUILD)await caches.delete(key);
+  await self.clients.claim();
+ })());
 });
-
-self.addEventListener("fetch", event => {
-  if (event.request.method !== "GET") {
-    return;
-  }
-
-  const requestUrl = new URL(event.request.url);
-
-  if (event.request.mode === "navigate") {
-    event.respondWith(
-      fetch(event.request)
-        .catch(() => caches.match(event.request))
-        .then(response => response || caches.match("./index.html"))
-    );
-    return;
-  }
-
-  if (
-    requestUrl.origin !== self.location.origin &&
-    requestUrl.origin !== "https://cdn.jsdelivr.net"
-  ) {
-    return;
-  }
-
-  event.respondWith(
-    caches.match(event.request).then(cachedResponse => {
-      if (cachedResponse) {
-        return cachedResponse;
-      }
-
-      return fetch(event.request).then(networkResponse => {
-        if (!networkResponse || networkResponse.status !== 200) {
-          return networkResponse;
-        }
-
-        const responseClone = networkResponse.clone();
-        caches.open(CACHE_NAME).then(cache => cache.put(event.request, responseClone));
-        return networkResponse;
-      });
-    })
-  );
+self.addEventListener('fetch',e=>{
+ if(e.request.method!=='GET')return;
+ const url=new URL(e.request.url);
+ if(url.origin!==self.location.origin || !ALLOWED.has(url.origin+url.pathname))return;
+ e.respondWith(caches.open(BUILD).then(async c=>(await c.match(url.origin+url.pathname))||fetch(e.request)));
 });
