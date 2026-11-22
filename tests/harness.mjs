@@ -14,7 +14,7 @@ export const bootstrap = `create role anon; create role authenticated;
 // real-Auth and financial tests; passing v2 is never presented as proving v3.
 export async function migration({latest=false}={}) {
   const dir = new URL('../supabase/migrations/', import.meta.url);
-  const files = (await readdir(dir)).filter(f => f.endsWith('.sql')&&(latest||!f.endsWith('_three_operator_access.sql'))).sort();
+  const files = (await readdir(dir)).filter(f => f.endsWith('.sql')&&(latest||(!f.endsWith('_three_operator_access.sql')&&!f.endsWith('_alltech_operacao.sql')))).sort();
   return (await Promise.all(files.map(file=>readFile(new URL(file,dir),'utf8')))).join('\n');
 }
 export async function seed(db) {

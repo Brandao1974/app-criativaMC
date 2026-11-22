@@ -1,5 +1,7 @@
 const PREFIXO='criativamc.operacao.v1:';
-const ACOES=new Set(['criar_obra','atualizar_obra','registrar_movimento','solicitar_exclusao','decidir_exclusao']);
+const ACOES=new Set(['criar_obra','atualizar_obra','registrar_movimento','solicitar_exclusao','decidir_exclusao',
+  'alltech_criar_obra','alltech_localizacao','alltech_participante','alltech_percentuais','alltech_liquidar',
+  'alltech_adiantar','alltech_solicitar_estorno','alltech_decidir_estorno','alltech_agendar','alltech_concluir']);
 // The ONLY persisted fields are an opaque operation UUID, version and action.
 // No amounts, descriptions, work IDs, request bodies or payload fingerprints.
 export function criarRecuperacao(servicos,storage,locks) {

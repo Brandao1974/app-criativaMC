@@ -10,7 +10,8 @@ import { randomBytes, randomUUID, createHmac } from 'node:crypto';
 import pg from 'pg';
 import { migration } from '../tests/harness.mjs';
 const authBin=resolve('.local/tools/gotrue.exe'),restBin=resolve('.local/tools/postgrest14/postgrest.exe');
-const accessMode=process.argv.includes('--access');
+const alltechMode=process.argv.includes('--alltech');
+const accessMode=alltechMode || process.argv.includes('--access');
 await access(authBin);await access(restBin);
 const cluster=await iniciarPostgres();const filhos=[];let proxy,db;
 const log=texto=>{void appendFile(resolve(cluster.root,'auth-rest.log'),String(texto)+'\n');};
@@ -102,7 +103,8 @@ try {
   await new Promise(r=>proxy.listen(proxyPort,'127.0.0.1',r));
   console.log('Stack exclusivamente local: Auth 2.197.0 (socket Windows adaptado) + PostgREST 14.1 + PostgreSQL 17.11; três fixtures .test.');
   const code=await new Promise((ok,fail)=>{
-    const c=spawn(process.execPath,['--test','--test-reporter=spec',accessMode?'tests/native/access.test.mjs':'tests/native/auth-api.test.mjs'],{
+    const filtro=alltechMode?['--test-name-pattern=^(AC0[1-3]|ALLTECH:)']:[];
+    const c=spawn(process.execPath,['--test','--test-reporter=spec',...filtro,accessMode?'tests/native/access.test.mjs':'tests/native/auth-api.test.mjs'],{
       env:{...process.env,...env},stdio:'inherit',windowsHide:true});c.once('error',fail);c.once('exit',ok);
   });
   process.exitCode=code??1;

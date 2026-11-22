@@ -2,6 +2,7 @@ import { formatarBRL, textoParaCentavos, valorGrafico } from './dinheiro.js';
 import { elemento, linhas, dataTexto } from './ui.js';
 import { mensagemErro } from './servicos.js';
 import { Chart } from './vendor/chart.js';
+import { criarPainelAlltech, preencherUF } from './alltech.js';
 import { criarRecuperacao } from './recuperacao.js';
 
 export async function iniciar(servicos) {
@@ -11,6 +12,7 @@ export async function iniciar(servicos) {
   const privados = [...document.querySelectorAll('[data-private]')];
   const recuperacao=criarRecuperacao(servicos,window.localStorage,window.navigator?.locks);
   let estado = null, ocupado = false, encerrado = false, grafico = null;
+  let painel;
   const ir = destino => window.location.replace(destino);
   const nome = id => estado?.perfis.find(p => p.id === id)?.nome || 'Não identificado';
   const texto = (id, valor) => { if ($(id)) $(id).textContent = valor; };
@@ -28,11 +30,16 @@ export async function iniciar(servicos) {
     if (pagina === 'login') { estado = null; return; }
     limpar(); ir('login.html');
   });
+  async function complementar(base) {
+    if (!base || !servicos.lerAlltech || !document.body.hasAttribute('data-alltech')) return base;
+    return {...base,alltech:await servicos.lerAlltech(base.usuario_id)};
+  }
   async function recarregar() {
-    const novo = await servicos.ler();
+    const novo = await complementar(await servicos.ler());
     if (encerrado) return;
+    const anterior = estado;
     estado = novo;
-    renderizar();
+    renderizar(anterior);
   }
   async function executar(acao, dados) {
     const usuario=estado.usuario_id;
@@ -40,11 +47,7 @@ export async function iniciar(servicos) {
     await recarregar();
     await recuperacao.confirmar(usuario,resposta.id);
     mensagem(resposta.recuperada?'Tentativa anterior localizada no servidor. Confira o resultado antes de iniciar uma nova operação.':'Operação concluída. Saldos atualizados.');
-  }
-  function limparFormulario(acao) {
-    const ids=acao==='criar_obra'?['cliente','descricao','localizacao','responsavel-loja','valor']:
-      acao==='registrar_movimento'?['descricao-entrada','valor-entrada','descricao-custo','valor-custo','tipo']:[];
-    for(const id of ids)if($(id)?.tagName==='INPUT')$(id).value='';
+    return !resposta.recuperada && !encerrado;
   }
   async function conferirAnterior(encerramento=false) {
     const usuario=estado.usuario_id;
@@ -59,7 +62,6 @@ export async function iniciar(servicos) {
     }
     await recarregar();
     await recuperacao.confirmar(usuario,anterior.id);
-    limparFormulario(anterior.acao);
     mensagem(anterior.estado==='cancelada'?'Tentativa encerrada no servidor. Nenhum envio atrasado com esse identificador será aplicado.':'Operação anterior confirmada no servidor. Confira os dados atualizados antes de repetir qualquer lançamento.');
     return true;
   }
@@ -81,14 +83,14 @@ export async function iniciar(servicos) {
     if (ocupado || encerrado) return;
     ocupado = true;
     document.body.dataset.ocupado = 'true';
-    const botoes = [...document.querySelectorAll('button')];
-    botoes.forEach(b => { b.disabled = true; });
+    const controles = [...document.querySelectorAll('button:enabled, form input:enabled, form select:enabled, form textarea:enabled')];
+    controles.forEach(c => { c.disabled = true; });
     try { mensagem('Processando…'); await fn(); }
     catch (erro) { mensagem(erro instanceof Error && !erro.code ? erro.message : mensagemErro(erro), true); }
     finally {
       ocupado = false;
       document.body.dataset.ocupado = 'false';
-      botoes.forEach(b => { b.disabled = false; });
+      controles.forEach(c => { c.disabled = false; });
     }
   }
   function lista(id, itens, render) {
@@ -131,45 +133,82 @@ export async function iniciar(servicos) {
     },'botao-exclusao'));
     return div;
   }
-  function renderizar() {
-    if (!estado || encerrado) return;
-    texto('usuario-logado',`Usuário: ${nome(estado.usuario_id)}`);
-    if (pagina === 'dashboard') {
-      texto('total-obras',`Total de Obras: ${estado.obras.length}`);
-      texto('caixa-total',`Caixa: ${formatarBRL(estado.saldo_centavos)}`);
-      texto('lucro-total',`Resultado: ${formatarBRL(estado.saldo_centavos)}`);
-      texto('obras-andamento',`Obras em andamento: ${estado.obras.filter(o=>o.status!=='Finalizada').length}`);
-      // Existing pie chart, now bundled locally at a pinned version.
-      const canvas=$('grafico');
-      try {
-        const valores=estado.obras.map(o=>valorGrafico(estado.resumos.find(r=>r.obra_id===o.id)?.entradas_centavos ?? '0'));
-        grafico?.destroy();
-        grafico = new Chart(canvas.getContext('2d'), {
-          type:'pie',data:{labels:estado.obras.map(o=>o.cliente),datasets:[{data:valores,
-            backgroundColor:['#145b7d','#1b7f78','#ffd166','#ff6b6b','#9b5de5','#4cc9f0']}]},
-          options:{responsive:true,plugins:{legend:{position:'bottom'}}}
-        });
-        if(!grafico.ctx)throw new Error('Contexto do gráfico indisponível');
-      } catch { texto('grafico-aviso','Gráfico indisponível. Os indicadores financeiros continuam disponíveis.'); }
-    }
-    if (pagina === 'obras') lista('lista',estado.obras,o=> {
-      const card=linhas('obra-item',[o.cliente,o.localizacao || o.descricao || 'Sem localização informada',`Status: ${o.status}`]);
-      card.tabIndex=0; card.setAttribute('role','link');
-      card.addEventListener('click',()=>abrir(o.id));
-      card.addEventListener('keydown',e=>{if(e.key==='Enter')abrir(o.id);});
+  function renderizarObras() {
+    if (!estado) return;
+    const normalizar = valor => valor.normalize('NFD').replace(/\p{M}/gu,'').toLowerCase();
+    const busca = normalizar(campo('filtro-obra'));
+    const data = campo('filtro-data');
+    const uf = campo('filtro-uf'), cidade = normalizar(campo('filtro-cidade'));
+    const obras = estado.obras.filter(o =>
+      (!uf || estado.alltech?.localizacoes[o.id]?.uf===uf) &&
+      (!cidade || normalizar(estado.alltech?.localizacoes[o.id]?.cidade || '').includes(cidade)) &&
+      (!data || o.data_execucao === data) &&
+      (!busca || normalizar(o.cliente).includes(busca) || normalizar(o.localizacao || '').includes(busca)));
+    lista('lista',obras,o=>{
+      const card = elemento('a',null,'obra-item obra-link');
+      card.href = `obras-detalhe.html?id=${encodeURIComponent(o.id)}`;
+      const local=estado.alltech?.localizacoes[o.id];
+      const estruturada=[local?.cidade,local?.uf].filter(Boolean).join(' / ');
+      card.append(elemento('strong',o.cliente),
+        elemento('span',[o.localizacao,estruturada].filter(Boolean).join(' · ') || 'Sem localização informada'),
+        elemento('span',o.data_execucao ? `${o.status} · ${dataTexto(o.data_execucao)}` : o.status));
       return card;
     });
+  }
+  function renderizarGrafico() {
+    const area = $('grafico-area');
+    grafico?.destroy();
+    grafico = null;
+    area.hidden = true;
+    texto('grafico-aviso','');
+    try {
+      const entradas = estado.obras.map(o=>({
+        cliente:o.cliente,
+        valor:valorGrafico(estado.resumos.find(r=>r.obra_id===o.id)?.entradas_centavos ?? '0')
+      })).filter(o=>o.valor>0);
+      if (!entradas.length) {
+        texto('grafico-aviso','Nenhuma entrada registrada para exibir.');
+        return;
+      }
+      area.hidden = false;
+      grafico = new Chart($('grafico').getContext('2d'), {
+        type:'pie',data:{labels:entradas.map(o=>o.cliente),datasets:[{data:entradas.map(o=>o.valor),
+          backgroundColor:['#145b7d','#1b7f78','#ffd166','#ff6b6b','#9b5de5','#4cc9f0']}]},
+        options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom'}}}
+      });
+      if (!grafico.ctx) throw new Error('Contexto do gráfico indisponível');
+    } catch {
+      grafico?.destroy();
+      grafico = null;
+      area.hidden = true;
+      texto('grafico-aviso','Gráfico indisponível. Os indicadores financeiros continuam disponíveis.');
+    }
+  }
+  function renderizar(anterior) {
+    if (!estado || encerrado) return;
+    texto('usuario-logado',`Usuário: ${nome(estado.usuario_id)}`);
+    painel?.renderizar(estado);
+    if (pagina === 'dashboard') {
+      texto('total-obras',String(estado.obras.length));
+      texto('caixa-total',formatarBRL(estado.alltech?.financeiro.reduce((s,f)=>s+BigInt(f.caixa),0n) ?? estado.saldo_centavos));
+      texto('lucro-total',formatarBRL(estado.saldo_centavos));
+      texto('obras-andamento',String(estado.obras.filter(o=>o.status!=='Finalizada').length));
+      renderizarGrafico();
+    }
+    if (pagina === 'obras') renderizarObras();
     if (pagina === 'detalhe') {
       const o=obraAtual();
       const resumo=estado.resumos.find(r=>r.obra_id===o.id);
-      for (const [id,valor] of Object.entries({cliente:o.cliente,descricao:o.descricao || 'Sem descrição informada',status:`Status: ${o.status}`,
-        valor:formatarBRL(o.valor_centavos),localizacao:o.localizacao || 'Não informada','responsavel-cliente':o.responsavel_cliente || 'Não informado',
+      texto('obra-resumo', [o.cliente, o.localizacao || 'Localização não informada',
+        o.data_execucao ? dataTexto(o.data_execucao) : 'Sem data de execução'].join(' · '));
+      for (const [id,valor] of Object.entries({descricao:o.descricao || 'Sem descrição informada',status:`Status: ${o.status}`,
+        valor:formatarBRL(o.valor_centavos),'responsavel-cliente':o.responsavel_cliente || 'Não informado',
         'usuario-criador':o.legado ? `Legado não verificado: ${o.legado.usuarioCriador || o.legado.responsavel || 'não informado'}` : nome(o.criado_por),
-        lucro:formatarBRL(resumo.saldo_centavos),'resumo-custos':formatarBRL(resumo.custos_centavos),
-        'total-entradas':`Total Entradas: ${formatarBRL(resumo.entradas_centavos)}`,'total-custos':`Total Custos: ${formatarBRL(resumo.custos_centavos)}`,
-        'data-agendada':o.data_execucao ? `Data Agendada: ${dataTexto(o.data_execucao)}` : ''})) texto(id,valor);
-      $('novo-status').value=o.status;
-      $('data-execucao').value=o.data_execucao || '';
+        lucro:formatarBRL(resumo.saldo_centavos),
+        'total-entradas':formatarBRL(resumo.entradas_centavos),'total-custos':formatarBRL(resumo.custos_centavos)})) texto(id,valor);
+      const obraAnterior = anterior?.obras.find(registro => registro.id === o.id);
+      if (!obraAnterior || $('novo-status').value === obraAnterior.status) $('novo-status').value = o.status;
+      if (!obraAnterior || $('data-execucao').value === (obraAnterior.data_execucao || '')) $('data-execucao').value = o.data_execucao || '';
       const movimentos=estado.movimentos.filter(m=>m.obra_id===o.id);
       lista('entradas',movimentos.filter(m=>m.tipo==='entrada'),cardMovimento);
       lista('custos',movimentos.filter(m=>m.tipo==='custo'),cardMovimento);
@@ -179,7 +218,7 @@ export async function iniciar(servicos) {
         'Histórico legado não verificado',String(e.bruto.status || ''),`${e.bruto.usuario || ''} — ${e.bruto.data || ''}`]));
     }
     if (pagina === 'caixa') {
-      texto('valor-caixa',`Valor em Caixa: ${formatarBRL(estado.saldo_centavos)}`);
+      texto('valor-caixa',`Valor em Caixa: ${formatarBRL(estado.alltech?.financeiro.reduce((s,f)=>s+BigInt(f.caixa),0n) ?? estado.saldo_centavos)}`);
       lista('lista-caixa',estado.movimentos.toReversed(),m=>linhas(`obra-item movimentacao-caixa ${m.tipo==='entrada'?'entrada-item':'saida-item'}`,[
         `${m.estorna_id?'Estorno — ':''}${m.tipo==='entrada'?'Entrada':'Saída'}`,
         estado.obras.find(o=>o.id===m.obra_id)?.cliente || '',formatarBRL(m.valor_centavos),
@@ -201,14 +240,17 @@ export async function iniciar(servicos) {
     }
   }
   const acoes = {
-    irObras:()=>{window.location.href='obras.html';},irCaixa:()=>{window.location.href='caixa.html';},irAgenda:()=>{window.location.href='agenda.html';},
-    voltarDashboard:()=>{window.location.href='dashboard.html';},voltar:()=>{window.location.href='obras.html';},
+    voltarDashboard:()=>{window.location.href='dashboard.html';},
     logout:async()=>{await servicos.sair();limpar();ir('login.html');},
     atualizar:async()=>{if(!await conferirAnterior(true)){await recarregar();mensagem('Dados atualizados.');}},
     criarObra:async()=>{
       if (!campo('cliente')) throw new Error('Informe o cliente.');
-      await executar('criar_obra',{cliente:campo('cliente'),descricao:campo('descricao'),localizacao:campo('localizacao'),responsavel_cliente:campo('responsavel-loja'),valor_centavos:textoParaCentavos(campo('valor'),{zero:true})});
-      for (const id of ['cliente','descricao','localizacao','responsavel-loja','valor']) $(id).value='';
+      const dados={cliente:campo('cliente'),descricao:campo('descricao'),localizacao:campo('localizacao'),responsavel_cliente:campo('responsavel-loja'),valor_centavos:textoParaCentavos(campo('valor'),{zero:true})};
+      const uf=campo('cadastro-uf'),cidade=campo('cadastro-cidade');
+      const gravada=uf||cidade ? await executar('alltech_criar_obra',{...dados,uf,cidade}) : await executar('criar_obra',dados);
+      if (!gravada) return;
+      document.querySelector('[data-submit="criarObra"]').reset();
+      ir('dashboard.html?obra=cadastrada');
     },
     alterarStatus:async()=>{const o=obraAtual();await executar('atualizar_obra',{id:o.id,versao:o.versao,status:campo('novo-status')});},
     agendarObra:async()=>{
@@ -221,12 +263,31 @@ export async function iniciar(servicos) {
     const sufixo=tipo==='entrada'?'entrada':'custo';
     const descricao=campo(`descricao-${sufixo}`);
     if (!descricao || (tipo==='custo' && !campo('tipo'))) throw new Error('Informe descrição e tipo do custo, quando aplicável.');
-    await executar('registrar_movimento',{obra_id:obraAtual().id,tipo,descricao,
+    const gravado = await executar('registrar_movimento',{obra_id:obraAtual().id,tipo,descricao,
       categoria:tipo==='custo'?campo('tipo'):null,valor_centavos:textoParaCentavos(campo(`valor-${sufixo}`))});
-    $(`descricao-${sufixo}`).value=''; $(`valor-${sufixo}`).value='';
-    if(tipo==='custo')$('tipo').value='';
+    if (!gravado) return;
+    const secao = $(tipo === 'entrada' ? 'nova-entrada' : 'novo-custo');
+    secao.querySelector('form').reset();
+    secao.open = false;
+    secao.querySelector('summary').focus();
   }
-  for (const b of document.querySelectorAll('[data-action]')) b.addEventListener('click',()=>envolver(acoes[b.dataset.action]));
+  for (const b of document.querySelectorAll('[data-action]:not([type="submit"])')) {
+    b.addEventListener('click',()=>envolver(acoes[b.dataset.action]));
+  }
+  for (const form of document.querySelectorAll('[data-submit]')) {
+    form.addEventListener('submit',evento=>{
+      evento.preventDefault();
+      envolver(acoes[form.dataset.submit]);
+    });
+  }
+  for(const select of document.querySelectorAll('[data-uf]')) preencherUF(select);
+  painel=criarPainelAlltech({executar,envolver,obraAtual});
+  if (pagina === 'obras') {
+    $('filtro-uf')?.addEventListener('change',renderizarObras);
+    $('filtro-cidade')?.addEventListener('input',renderizarObras);
+    $('filtro-obra').addEventListener('input',renderizarObras);
+    $('filtro-data').addEventListener('change',renderizarObras);
+  }
   if (pagina === 'login') {
     $('form-login').addEventListener('submit',e=>{
       e.preventDefault();
@@ -249,7 +310,7 @@ export async function iniciar(servicos) {
   }
   mensagem('Carregando sessão…');
   try {
-    estado=await servicos.sessao();
+    estado=await complementar(await servicos.sessao());
     if (!estado) { ir('login.html'); return; }
     if (encerrado) return;
     if (pagina==='index') { ir('dashboard.html'); return; }
@@ -259,7 +320,11 @@ export async function iniciar(servicos) {
       await iniciarAdministracao(servicos,estado.usuario_id);
     }
     privados.forEach(el=>{el.hidden=false;});
-    if(!await conferirAnterior())mensagem('');
+    if(!await conferirAnterior()) {
+      const cadastrada = pagina === 'dashboard' && new URLSearchParams(window.location.search).get('obra') === 'cadastrada';
+      if (cadastrada) window.history?.replaceState(null,'','dashboard.html');
+      mensagem(cadastrada ? 'Obra cadastrada com sucesso.' : '');
+    }
   } catch(erro) { mensagem(mensagemErro(erro),true); }
   return { recarregar, limpar };
 }

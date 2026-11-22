@@ -353,3 +353,64 @@ test('AC38 entrypoint Edge executa em Deno real: login e administração locais'
   assert.equal((await post('listar',{},session.access_token)).status,403);
  }finally{if(child.exitCode===null)child.kill();await stopped;}
 });
+
+test('ALLTECH: PostgREST autorizado, cálculo, estorno cruzado, versão concorrente e liquidação',opts,async()=>{
+ const session=adminToken;
+ const other=tokens.ivan;
+ const rpc=async(token,nome,body={})=>{
+  const response=await fetch(process.env.LOCAL_SUPABASE_URL+'/rest/v1/rpc/'+nome,{
+   method:'POST',headers:{apikey:process.env.LOCAL_SUPABASE_PUBLIC_KEY,
+    authorization:'Bearer '+token,'content-type':'application/json'},body:JSON.stringify(body)
+  });
+  const result=await response.json();
+  if(!response.ok) throw Object.assign(new Error(result.message),{code:result.code,status:response.status});
+  return result;
+ };
+ const operacao=(acao,dados,token=session,id=randomUUID())=>rpc(token,'alltech_executar',{
+  p_usuario:claims(token).sub,p_acao:'alltech_'+acao,p_dados:dados,p_operacao:id
+ });
+ const ler=(token=session)=>rpc(token,'alltech_ler');
+ const {id}=await operacao('criar_obra',{cliente:'AllTech QA',localizacao:'Local histórico livre',
+  valor_centavos:'7000000',uf:'SP',cidade:'São José'});
+ const dados={obra_id:id};
+ const resumo=async()=> (await ler()).financeiro.find(o=>o.obra_id===id);
+ assert.equal((await ler(other)).localizacoes[id].cidade,'São José');
+ assert.equal((await state(session)).obras.find(o=>o.id===id).localizacao,'Local histórico livre');
+ await finance(session,'registrar_movimento',{...dados,tipo:'entrada',descricao:'Entrada',valor_centavos:'5000000'});
+ await finance(session,'registrar_movimento',{...dados,tipo:'custo',categoria:'ACM',descricao:'Custo',valor_centavos:'2000000'});
+ const {id:trabalhador}=await operacao('participante',{...dados,versao:0,nome:'Trabalhador sintético',peso:1000});
+ let r=await resumo();
+ assert.deepEqual(r.participantes.map(p=>p.participacao),['900000','900000','900000','300000']);
+ assert.equal(r.contratado,'7000000');assert.equal(r.entradas,'5000000');assert.equal(r.resultado,'3000000');
+ await assert.rejects(operacao('participante',{...dados,versao:1,nome:'Excesso',peso:9001}),{code:'23514'});
+ const pesos=Object.fromEntries(r.participantes.map(p=>[p.id,p.peso]));
+ const mudar={...dados,versao:1,pesos};
+ const corridas=await Promise.allSettled([operacao('percentuais',mudar),operacao('percentuais',mudar,other)]);
+ assert.equal(corridas.filter(x=>x.status==='fulfilled').length,1);
+ assert.equal(corridas.find(x=>x.status==='rejected').reason.code,'PT409');
+ const op=randomUUID(), adiantar={...dados,participante_id:trabalhador,valor_centavos:'400000',data:'2026-11-22',observacao:'Sintético'};
+ const a=await operacao('adiantar',adiantar,session,op);
+ assert.deepEqual(await operacao('adiantar',adiantar,session,op),a);
+ assert.equal((await dbAs(session,'select public.consultar_operacao($1) as r',[op])).rows[0].r.estado,'concluida');
+ r=await resumo();
+ assert.equal(r.caixa,'2600000');assert.equal(r.resultado,'3000000');
+ assert.equal(r.participantes.find(p=>p.id===trabalhador).saldo,'-100000');
+ const pedido=await operacao('solicitar_estorno',{adiantamento_id:a.id,motivo:'Conferência'});
+ const decidir={solicitacao_id:pedido.id,decisao:'aprovada',motivo:'Conferido'};
+ await assert.rejects(operacao('decidir_estorno',decidir),{code:'42501'});
+ await operacao('decidir_estorno',decidir,other);
+ r=await resumo();assert.equal(r.caixa,'3000000');
+ await operacao('liquidar',{...dados,versao:r.versao,demonstrativo:r});
+ await assert.rejects(operacao('percentuais',{...dados,versao:r.versao,pesos}),{code:'23514'});
+ await finance(session,'registrar_movimento',{...dados,tipo:'custo',categoria:'ACM',descricao:'Custo adicional',valor_centavos:'4000000'});
+ assert.ok((await resumo()).participantes.every(p=>p.participacao==='0'));
+ assert.deepEqual((await ler()).liquidacoes.find(l=>l.obra_id===id).demonstrativo,r);
+ const agenda=await operacao('agendar',{obra_id:id,descricao:'Visita'});
+ await operacao('concluir',{id:agenda.id},other);
+ assert.equal((await ler()).agenda.find(a=>a.id===agenda.id).concluido_por,claims(other).sub);
+ await assert.rejects(dbAs(session,'select * from private.alltech_adiantamentos'),{code:'42501'});
+ const anon=await fetch(process.env.LOCAL_SUPABASE_URL+'/rest/v1/rpc/alltech_ler',{
+  method:'POST',headers:{apikey:process.env.LOCAL_SUPABASE_PUBLIC_KEY,'content-type':'application/json'},body:'{}'
+ });
+ assert.equal(anon.ok,false);
+});

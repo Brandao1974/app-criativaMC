@@ -45,10 +45,21 @@ export function criarServicos(client, gateway) {
       return ler();
     },
     ler,
+    async lerAlltech(usuario) {
+      const versao=geracao;
+      const {data,error}=await client.rpc('alltech_ler');
+      if (error) {
+        if(error.code==='42501' || error.code==='PGRST301' || error.status===401) invalidar();
+        throw error;
+      }
+      if (versao!==geracao || data.usuario_id!==usuario) throw new Error('Sessão mudou. Entre novamente.');
+      return data;
+    },
     async executar(acao, dados, operacao, usuarioEsperado=ultimoUsuario) {
       const versao=geracao;
-      const { data, error } = await client.rpc('executar_com_identidade', {
-        p_usuario_esperado:usuarioEsperado,p_acao: acao, p_dados: dados, p_operacao: operacao });
+      const nova = acao.startsWith('alltech_');
+      const { data, error } = await client.rpc(nova?'alltech_executar':'executar_com_identidade', {
+        [nova?'p_usuario':'p_usuario_esperado']:usuarioEsperado,p_acao: acao, p_dados: dados, p_operacao: operacao });
       if (error) throw error;
       if(versao!==geracao)throw new Error('Sessão mudou. Confira a operação ao entrar novamente.');
       return data;
@@ -75,7 +86,7 @@ export function criarServicos(client, gateway) {
 }
 export function mensagemErro(error) {
   if (error?.code === '42501') return 'Acesso não autorizado para este operador.';
-  if (error?.code === '40001') return 'A obra mudou em outra sessão. Recarregue antes de salvar.';
+  if (error?.code === '40001' || error?.code === 'PT409') return 'A obra mudou em outra sessão. Recarregue antes de salvar.';
   if (error?.code === '23505') return 'Já existe uma solicitação ou operação para este registro. Recarregue.';
   if (error?.code === '23514') return 'Operação incompatível com o estado atual. Recarregue e confira os dados.';
   if (error?.status === 400 || error?.code === 'invalid_credentials') return 'Usuário, senha ou código inválidos.';

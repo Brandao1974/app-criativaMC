@@ -8,15 +8,22 @@ test('PWA: um build, cache limitado ao shell e preservação de outros aplicativ
     clients:{claim:async()=>{}},addEventListener:(evento,fn)=>{listeners[evento]=fn;},skipWaiting:()=>{ativou=true;}};
   const fonte=await readFile(new URL('../sw.js',import.meta.url),'utf8');
   const build=/const BUILD = '([^']+)'/.exec(fonte)[1];
+  const buildAnterior='criativamc-7265b643e43c6517';
+  assert.notEqual(build,buildAnterior);
   const caches={open:async()=>({addAll:async urls=>{pedidos.push(...urls);},match:async()=>({status:200})}),
-    keys:async()=>['outro-app','gestao-obras-v1','criativamc-antigo',build],delete:async k=>{apagados.push(k);}};
+    keys:async()=>['outro-app','gestao-obras-v1',buildAnterior,build],delete:async k=>{apagados.push(k);}};
   vm.runInNewContext(fonte,{self,caches,URL,Set,fetch:async()=>({status:200})});
   listeners.install({waitUntil:p=>{aguardado=p;}});await aguardado;
   assert.equal(ativou,false);
+  assert.ok(pedidos.includes(new URL('obra-cadastro.html',self.registration.scope).href));
+  let pagina;
+  listeners.fetch({request:{method:'GET',url:new URL('dashboard.html?obra=cadastrada',self.registration.scope).href},
+    respondWith:p=>{pagina=p;}});
+  assert.equal((await pagina)?.status,200);
   for(const url of pedidos)await access(new URL('../'+new URL(url).pathname.replace('/app-criativaMC/',''),import.meta.url));
   assert.ok(pedidos.every(u=>u.startsWith(self.registration.scope)));
   listeners.activate({waitUntil:p=>{aguardado=p;}});await aguardado;
-  assert.deepEqual(apagados,['criativamc-antigo']);
+  assert.deepEqual(apagados,[buildAnterior]);
   for(const url of ['https://example.supabase.co/auth/v1/token','https://example.supabase.co/rest/v1/rpc/ler_estado','https://example.test/other-app/index.html']) {
     let interceptado=false;
     listeners.fetch({request:{method:'GET',url},respondWith:()=>{interceptado=true;}});
