@@ -14,34 +14,40 @@
 <link rel="apple-touch-icon" href="images/apple-touch-icon.png">
 <link rel="stylesheet" href="css/style.css">
 </head>
-<body data-pagina="dashboard">
+<body data-alltech data-pagina="dashboard">
 <p id="app-mensagem" class="app-mensagem" role="status" aria-live="polite"></p>
 <div data-private hidden class="dashboard painel-dashboard">
 <button type="button" class="atualizar-dados" data-action="atualizar">Atualizar dados</button>
 <div class="painel-topo">
-<div>
-<p class="agenda-eyebrow">Central de Gestao</p>
-<h2>Gestao de Obras</h2>
+<div class="marca-cabecalho">
+<img class="marca-logo" src="images/alltech-logo.png" alt="AllTech Comunicação Visual" width="1254" height="1254">
+<div class="marca-texto">
+<p class="agenda-eyebrow">Central de Gestão</p>
+<h1>Gestão de Obras</h1>
 <p id="usuario-logado" class="usuario-logado detalhe-usuario"></p>
+</div>
 </div>
 <button class="agenda-voltar painel-sair" data-action="logout">Sair</button>
 </div>
-<div class="menu painel-menu">
-<button data-action="irObras">Obras</button>
-<button data-action="irCaixa">Caixa</button>
-<button data-action="irAgenda">Agenda</button>
-</div>
+<nav class="portal-menu" aria-label="Áreas do aplicativo">
+<a href="obra-cadastro.html">Cadastrar Obra</a>
+<a href="obras.html">Obras Cadastradas</a>
+<a href="caixa.html">Financeiro</a>
+<a href="adiantamentos.html">Adiantamentos</a>
+<a href="participacoes.html">Participações</a>
+<a href="agenda.html">Agenda</a>
+</nav>
 <div class="painel-metricas">
 <div class="resumo painel-metrica-card">
 <span class="detalhe-label">Obras</span>
 <p id="total-obras" class="painel-metrica-valor"></p>
 </div>
 <div class="resumo painel-metrica-card">
-<span class="detalhe-label">Caixa</span>
+<span class="detalhe-label">Caixa disponível</span>
 <p id="caixa-total" class="painel-metrica-valor"></p>
 </div>
 <div class="resumo painel-metrica-card">
-<span class="detalhe-label">Resultado de Caixa</span>
+<span class="detalhe-label">Resultado apurado</span>
 <p id="lucro-total" class="painel-metrica-valor"></p>
 </div>
 <div class="resumo painel-metrica-card">
@@ -52,9 +58,11 @@
 <div class="financeiro painel-grafico-card">
 <div class="detalhe-card-head">
 <h3>Financeiro Geral</h3>
-<p>Painel consolidado para acompanhar distribuicao de entradas e ritmo operacional.</p>
+<p>Entradas registradas por obra.</p>
 </div>
-<canvas id="grafico" role="img"></canvas>
+<div id="grafico-area" class="painel-grafico-area" hidden>
+<canvas id="grafico" role="img" aria-label="Distribuição das entradas registradas por obra"></canvas>
+</div>
 <p id="grafico-aviso" role="status"></p>
 </div>
 </div>

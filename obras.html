@@ -5,8 +5,8 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://*.supabase.co wss://*.supabase.co http://127.0.0.1:54321 http://localhost:54321; object-src 'none'; base-uri 'self'; form-action 'self'">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#0c4a6e">
-<meta name="description" content="Cadastro e acompanhamento da carteira de obras.">
-<title>Obras</title>
+<meta name="description" content="Consulta da carteira de obras.">
+<title>Obras Cadastradas</title>
 <link rel="manifest" href="manifest.json">
 <link rel="icon" type="image/svg+xml" href="images/favicon.svg">
 <link rel="icon" type="image/png" sizes="96x96" href="images/favicon-96x96.png">
@@ -14,40 +14,29 @@
 <link rel="apple-touch-icon" href="images/apple-touch-icon.png">
 <link rel="stylesheet" href="css/style.css">
 </head>
-<body data-pagina="obras">
+<body data-alltech data-pagina="obras">
 <p id="app-mensagem" class="app-mensagem" role="status" aria-live="polite"></p>
-<div data-private hidden class="dashboard obras-dashboard">
+<main data-private hidden class="dashboard obras-dashboard">
 <button type="button" class="atualizar-dados" data-action="atualizar">Atualizar dados</button>
 <div class="detalhe-topo">
-<div>
-<p class="agenda-eyebrow">Pipeline Comercial e Operacional</p>
-<h2>Obras</h2>
-<p class="agenda-subtitulo">Cadastre novas obras e acompanhe rapidamente a carteira ativa da operacao.</p>
+<div class="marca-cabecalho">
+<img class="marca-logo" src="images/alltech-logo.png" alt="AllTech Comunicação Visual" width="1254" height="1254">
+<h1 class="marca-texto">Obras Cadastradas</h1>
 </div>
-<button class="agenda-voltar" data-action="voltarDashboard">Voltar</button>
+<a class="agenda-voltar" href="dashboard.html">Voltar</a>
 </div>
-<div class="detalhe-grid">
-<div class="nova-obra detalhe-card">
-<div class="detalhe-card-head">
-<h3>Nova Obra</h3>
-<p>Registre cliente, descricao e valor fechado para iniciar o ciclo da obra.</p>
+<section class="detalhe-card" aria-label="Carteira de obras">
+<div class="obra-filtros">
+<div><label for="filtro-obra">Cliente ou localização</label>
+<input type="search" id="filtro-obra"></div>
+<div><label for="filtro-data">Data de execução</label>
+<input type="date" id="filtro-data"></div>
 </div>
-<input type="text" id="cliente" placeholder="Cliente">
-<input type="text" id="descricao" placeholder="Descricao">
-<input type="text" id="localizacao" placeholder="Localizacao da Obra">
-<input type="text" id="responsavel-loja" placeholder="Responsavel da Loja">
-<input type="number" min="0" step="0.01" id="valor" placeholder="Valor Fechado">
-<button data-action="criarObra">Criar Obra</button>
-</div>
-<div class="lista-obras detalhe-card">
-<div class="detalhe-card-head">
-<h3>Carteira de Obras</h3>
-<p>Toque em uma obra para abrir o detalhe, financeiro e historico operacional.</p>
-</div>
+<div class="obra-filtros"><div><label for="filtro-uf">UF</label><select id="filtro-uf" data-uf><option value="">Todas</option></select></div>
+<div><label for="filtro-cidade">Cidade</label><input type="search" id="filtro-cidade" maxlength="120"></div></div>
 <div id="lista"></div>
-</div>
-</div>
-</div>
+</section>
+</main>
 <script src="js/pwa.js"></script>
 <script type="module" src="js/bootstrap.js"></script>
 </body>

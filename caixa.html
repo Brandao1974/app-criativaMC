@@ -14,15 +14,18 @@
 <link rel="apple-touch-icon" href="images/apple-touch-icon.png">
 <link rel="stylesheet" href="css/style.css">
 </head>
-<body data-pagina="caixa">
+<body data-alltech data-pagina="caixa">
 <p id="app-mensagem" class="app-mensagem" role="status" aria-live="polite"></p>
 <div data-private hidden class="dashboard caixa-dashboard">
 <button type="button" class="atualizar-dados" data-action="atualizar">Atualizar dados</button>
 <div class="detalhe-topo">
-<div>
+<div class="marca-cabecalho">
+<img class="marca-logo" src="images/alltech-logo.png" alt="AllTech Comunicação Visual" width="1254" height="1254">
+<div class="marca-texto">
 <p class="agenda-eyebrow">Financeiro Consolidado</p>
 <h2>Caixa Geral</h2>
 <p class="agenda-subtitulo">Acompanhe o saldo atual e o historico completo de entradas e saidas da operacao.</p>
+</div>
 </div>
 <button class="agenda-voltar" data-action="voltarDashboard">Voltar</button>
 </div>
@@ -35,6 +38,7 @@
 <h3>Movimentacoes</h3>
 <p>Lista cronologica de tudo o que entrou e saiu do caixa.</p>
 </div>
+<div id="alltech-caixa"></div>
 <div id="lista-caixa"></div>
 </div>
 </div>

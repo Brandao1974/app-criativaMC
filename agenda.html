@@ -14,16 +14,19 @@
 <link rel="apple-touch-icon" href="images/apple-touch-icon.png">
 <link rel="stylesheet" href="css/style.css">
 </head>
-<body data-pagina="agenda">
+<body data-alltech data-pagina="agenda">
 <p id="app-mensagem" class="app-mensagem" role="status" aria-live="polite"></p>
 <canvas id="agenda-confete" class="agenda-confete"></canvas>
 <div data-private hidden class="dashboard agenda-dashboard">
 <button type="button" class="atualizar-dados" data-action="atualizar">Atualizar dados</button>
 <div class="agenda-topo">
-<div>
+<div class="marca-cabecalho">
+<img class="marca-logo" src="images/alltech-logo.png" alt="AllTech Comunicação Visual" width="1254" height="1254">
+<div class="marca-texto">
 <p class="agenda-eyebrow">Planejamento Operacional</p>
 <h2>Agenda de Obras</h2>
 <p class="agenda-subtitulo">Visualize o fluxo das proximas execucoes, prioridades e responsaveis em ordem cronologica.</p>
+</div>
 </div>
 <button class="agenda-voltar" data-action="voltarDashboard">Voltar</button>
 </div>
@@ -44,6 +47,7 @@
 </div>
 <div id="lista-agenda" class="agenda-lista"></div>
 </div>
+<section id="alltech-agenda" class="detalhe-card"></section>
 </div>
 <script src="js/pwa.js"></script>
 <script type="module" src="js/bootstrap.js"></script>

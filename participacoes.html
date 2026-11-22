@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://*.supabase.co wss://*.supabase.co http://127.0.0.1:54321 http://localhost:54321; object-src 'none'; base-uri 'self'; form-action 'self'">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0c4a6e">
+<meta name="description" content="Participações">
+<title>Participações</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/svg+xml" href="images/favicon.svg">
+<link rel="icon" type="image/png" sizes="96x96" href="images/favicon-96x96.png">
+<link rel="shortcut icon" href="images/favicon.ico">
+<link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body data-alltech data-pagina="participacoes">
+<p id="app-mensagem" class="app-mensagem" role="status" aria-live="polite"></p>
+<main data-private hidden class="dashboard obras-dashboard">
+<button type="button" class="atualizar-dados" data-action="atualizar">Atualizar dados</button>
+<div class="detalhe-topo">
+<div class="marca-cabecalho">
+<img class="marca-logo" src="images/alltech-logo.png" alt="AllTech Comunicação Visual" width="1254" height="1254">
+<h1 class="marca-texto">Participações</h1>
+</div>
+<a class="agenda-voltar" href="dashboard.html">Voltar</a>
+</div>
+<section id="alltech-participacoes" class="detalhe-card" aria-label="Participações"></section>
+</main>
+<script src="js/pwa.js"></script>
+<script type="module" src="js/bootstrap.js"></script>
+</body>
+</html>

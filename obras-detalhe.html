@@ -14,129 +14,103 @@
 <link rel="apple-touch-icon" href="images/apple-touch-icon.png">
 <link rel="stylesheet" href="css/style.css">
 </head>
-<body data-pagina="detalhe">
+<body data-alltech data-pagina="detalhe">
 <p id="app-mensagem" class="app-mensagem" role="status" aria-live="polite"></p>
-<div data-private hidden class="dashboard detalhe-dashboard">
-<button type="button" class="atualizar-dados" data-action="atualizar">Atualizar dados</button>
-<div class="detalhe-topo">
-<div>
-<p class="agenda-eyebrow">Operacao da Obra</p>
-<h2>Detalhe da Obra</h2>
+<main data-private hidden class="dashboard detalhe-dashboard">
+<header class="detalhe-topo obra-cabecalho">
+<div class="marca-cabecalho">
+<img class="marca-logo" src="images/alltech-logo.png" alt="AllTech Comunicação Visual" width="1254" height="1254">
+<div class="marca-texto">
+<h1>Detalhe da Obra</h1>
 <p id="usuario-logado" class="usuario-logado detalhe-usuario"></p>
 </div>
-<button class="agenda-voltar" data-action="voltar">Voltar</button>
 </div>
-<div class="detalhe-hero">
-<div class="info-obra detalhe-hero-card">
-<div class="detalhe-hero-head">
-<span class="detalhe-badge">Visao Geral</span>
-<p id="status" class="detalhe-status-pill"></p>
+<div class="obra-acoes">
+<button type="button" class="atualizar-dados" data-action="atualizar">Atualizar dados</button>
+<a class="agenda-voltar" href="obras.html">Voltar</a>
 </div>
-<h3 id="cliente" class="detalhe-cliente"></h3>
+</header>
+<details class="detalhe-card obra-secao">
+<summary>Visão Geral <span id="obra-resumo" class="obra-resumo"></span></summary>
+<div class="obra-secao-corpo">
 <p id="descricao" class="detalhe-descricao"></p>
-<div class="detalhe-metricas">
-<div class="detalhe-metrica">
-<span class="detalhe-label">Valor</span>
-<strong id="valor"></strong>
-</div>
-<div class="detalhe-metrica">
-<span class="detalhe-label">Localizacao</span>
-<strong id="localizacao"></strong>
-</div>
-<div class="detalhe-metrica">
-<span class="detalhe-label">Responsavel Loja</span>
-<strong id="responsavel-cliente"></strong>
-</div>
-<div class="detalhe-metrica">
-<span class="detalhe-label">Criado por</span>
-<strong id="usuario-criador"></strong>
-</div>
-</div>
-</div>
-<div class="detalhe-resumos">
-<div class="resultado detalhe-resultado-card">
-<span class="detalhe-label">Resultado Atual</span>
-<h3 id="lucro"></h3>
-<p class="detalhe-ajuda">Resultado de caixa calculado automaticamente a partir de entradas e custos registrados.</p>
-</div>
-<div class="detalhe-custos-card">
-<span class="detalhe-label">Soma de Custos</span>
-<h3 id="resumo-custos"></h3>
-<p class="detalhe-custos-ajuda">Total acumulado de saidas operacionais desta obra.</p>
-</div>
-</div>
-</div>
+<p id="status" class="detalhe-status-pill"></p>
+<dl class="detalhe-metricas obra-dados">
+<div class="detalhe-metrica"><dt>Valor contratado</dt><dd id="valor"></dd></div>
+<div class="detalhe-metrica"><dt>Responsável da loja</dt><dd id="responsavel-cliente"></dd></div>
+<div class="detalhe-metrica"><dt>Criado por</dt><dd id="usuario-criador"></dd></div>
+<div class="detalhe-metrica"><dt>Resultado de caixa</dt><dd id="lucro"></dd></div>
+</dl>
+<div id="alltech-detalhe"></div>
 <div class="detalhe-grid">
-<div class="status-obra detalhe-card">
-<div class="detalhe-card-head">
-<h3>Status da Obra</h3>
-<p>Atualize o momento operacional da obra.</p>
-</div>
+<form class="obra-form" data-submit="alterarStatus">
+<label for="novo-status">Status da obra</label>
 <select id="novo-status">
-<option value="Negociacao">Negociacao</option>
+<option value="Negociacao">Negociação</option>
 <option value="Fechada">Fechada</option>
-<option value="Em Producao">Em Producao</option>
+<option value="Em Producao">Em Produção</option>
 <option value="Agendada">Agendada</option>
-<option value="Em Execucao">Em Execucao</option>
+<option value="Em Execucao">Em Execução</option>
 <option value="Finalizada">Finalizada</option>
 </select>
-<button data-action="alterarStatus">Atualizar Status</button>
-</div>
-<div class="agenda-obra detalhe-card">
-<div class="detalhe-card-head">
-<h3>Agendamento</h3>
-<p>Defina a data prevista de execucao.</p>
-</div>
-<input type="date" id="data-execucao">
-<button data-action="agendarObra">Agendar</button>
-<p id="data-agendada" class="detalhe-data-agendada"></p>
+<button type="submit" data-action="alterarStatus">Atualizar status</button>
+</form>
+<form class="obra-form" data-submit="agendarObra">
+<label for="data-execucao">Data prevista de execução</label>
+<input type="date" id="data-execucao" required>
+<button type="submit" data-action="agendarObra">Salvar data</button>
+</form>
 </div>
 </div>
-<div class="timeline detalhe-card">
-<div class="detalhe-card-head">
-<h3>Historico</h3>
-<p>Linha do tempo das decisoes e movimentacoes da obra.</p>
+</details>
+<div class="detalhe-grid">
+<details id="nova-entrada" class="detalhe-card obra-secao">
+<summary>Nova Entrada</summary>
+<form class="obra-secao-corpo obra-form" data-submit="adicionarEntrada">
+<label for="descricao-entrada">Descrição</label>
+<input type="text" id="descricao-entrada" required>
+<label for="valor-entrada">Valor (R$)</label>
+<input type="number" min="0.01" step="0.01" id="valor-entrada" required>
+<button type="submit" data-action="adicionarEntrada">Salvar entrada</button>
+</form>
+</details>
+<details id="novo-custo" class="detalhe-card obra-secao">
+<summary>Novo Custo</summary>
+<form class="obra-secao-corpo obra-form" data-submit="adicionarCusto">
+<label for="tipo">Categoria</label>
+<select id="tipo" required>
+<option value="">Selecione uma categoria</option>
+<option>Combustível</option>
+<option>Alimentação</option>
+<option>Estadia</option>
+<option>Manutenção de Veículo</option>
+<option>Pedágio</option>
+<option>Ferro</option>
+<option>ACM</option>
+<option>Materiais e Insumos</option>
+<option>Outros</option>
+</select>
+<label for="descricao-custo">Descrição do gasto</label>
+<input type="text" id="descricao-custo" required>
+<label for="valor-custo">Valor (R$)</label>
+<input type="number" min="0.01" step="0.01" id="valor-custo" required>
+<button type="submit" data-action="adicionarCusto">Salvar custo</button>
+</form>
+</details>
+<details class="detalhe-card obra-secao">
+<summary>Histórico de Entradas <span id="total-entradas" class="obra-resumo"></span></summary>
+<div id="entradas" class="obra-secao-corpo"></div>
+</details>
+<details class="detalhe-card obra-secao">
+<summary>Histórico de Custos <span id="total-custos" class="obra-resumo"></span></summary>
+<div id="custos" class="obra-secao-corpo"></div>
+</details>
 </div>
-<div id="historico"></div>
-</div>
-<div class="detalhe-grid detalhe-grid-financeiro">
-<div class="entrada-obra detalhe-card">
-<div class="detalhe-card-head">
-<h3>Nova Entrada</h3>
-<p>Registre recebimentos para atualizar o caixa da obra.</p>
-</div>
-<input type="text" id="descricao-entrada" placeholder="Descricao">
-<input type="number" min="0" step="0.01" id="valor-entrada" placeholder="Valor">
-<button data-action="adicionarEntrada">Adicionar Entrada</button>
-</div>
-<div class="novo-custo detalhe-card">
-<div class="detalhe-card-head">
-<h3>Novo Custo</h3>
-<p>Lance saidas operacionais e despesas da execucao.</p>
-</div>
-<input type="text" id="tipo" placeholder="Tipo (Material, Combustivel, etc)">
-<input type="text" id="descricao-custo" placeholder="Descricao">
-<input type="number" min="0" step="0.01" id="valor-custo" placeholder="Valor">
-<button data-action="adicionarCusto">Adicionar</button>
-</div>
-</div>
-<div class="detalhe-grid detalhe-grid-listas">
-<div class="lista-entradas detalhe-card">
-<div class="detalhe-card-head">
-<h3>Entradas</h3>
-<p id="total-entradas" class="detalhe-total"></p>
-</div>
-<div id="entradas"></div>
-</div>
-<div class="lista-custos detalhe-card">
-<div class="detalhe-card-head">
-<h3>Custos</h3>
-<p id="total-custos" class="detalhe-total"></p>
-</div>
-<div id="custos"></div>
-</div>
-</div>
-</div>
+<details class="detalhe-card obra-secao">
+<summary>Histórico de Status</summary>
+<div id="historico" class="obra-secao-corpo"></div>
+</details>
+</main>
 <script src="js/pwa.js"></script>
 <script type="module" src="js/bootstrap.js"></script>
 </body>
